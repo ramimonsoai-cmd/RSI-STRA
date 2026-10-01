@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="סימולטור מסחר חי", layout="wide")
 
-st.title("📈 סימולטור מסחר חי: RSI + SMA + Stop Loss")
-st.caption("סימולציה מבוססת שווי שוק, ניהול סיכונים כפול, עסקאות על הגרף והשוואה ל-S&P 500")
+st.title("📈 סימולטור מסחר חי: RSI + SMA + Stop Loss + RVOL")
+st.caption("סימולציה מבוססת שווי שוק, סינון מחזורי מסחר יחסיים (RVOL) והשוואה ל-S&P 500")
 
 # מאגר מניות ושווי שוק משוער במיליארדים
 STOCK_MARKET_CAPS = {
@@ -22,10 +22,12 @@ STOCK_MARKET_CAPS = {
 }
 
 # --- סרגל צד: פרמטרים ---
-st.sidebar.header("⚙️️ הגדרות אסטרטגיה")
+st.sidebar.header("⚙️ הגדרות אסטרטגיה")
 
+# 1. שווי שוק
 min_cap = st.sidebar.slider("1. שווי שוק מינימלי ($B)", min_value=150, max_value=500, value=200, step=25)
 
+# 2 + 3. RSI
 col_rsi1, col_rsi2 = st.sidebar.columns(2)
 with col_rsi1:
     rsi_entry = st.sidebar.number_input("2. RSI כניסה (<)", min_value=15, max_value=45, value=40, step=1)
@@ -33,15 +35,33 @@ with col_rsi2:
     rsi_exit = st.sidebar.number_input("3. RSI יציאה (>=)", min_value=50, max_value=85, value=60, step=1)
 rsi_period = st.sidebar.slider("תקופת RSI (ימים)", min_value=7, max_value=28, value=14)
 
+# 4 + 5. הון והקצאה
 col_c1, col_c2 = st.sidebar.columns(2)
 with col_c1:
     initial_capital = st.sidebar.number_input("4. הון התחלתי ($)", min_value=1000, max_value=500000, value=10000, step=1000)
 with col_c2:
     position_pct = st.sidebar.number_input("5. גודל עסקה (% מהתיק)", min_value=2.0, max_value=100.0, value=10.0, step=1.0) / 100.0
 
+# 6. ממוצע נע SMA
 use_sma = st.sidebar.checkbox("6. כניסה רק מעל SMA", value=True)
 sma_length = st.sidebar.number_input("אורך SMA", min_value=20, max_value=300, value=200, step=10, disabled=not use_sma)
 
+# 7. סינון מחזור מסחר יחסי (RVOL) - חדש!
+st.sidebar.markdown("---")
+st.sidebar.subheader("📊 סינון מחזורי מסחר (RVOL)")
+use_rvol = st.sidebar.checkbox("סנן כניסה לפי RVOL של יום הקנייה", value=False)
+min_rvol = st.sidebar.slider(
+    "סף RVOL מינימלי לכניסה:",
+    min_value=0.5,
+    max_value=3.0,
+    value=1.0,
+    step=0.1,
+    disabled=not use_rvol,
+    help="1.0 = מחזור ממוצע, מעל 1.2 = מחזור ער/חריג."
+)
+rvol_window = st.sidebar.number_input("תקופת ממוצע מחזורים (ימים)", min_value=5, max_value=60, value=20, step=5, disabled=not use_rvol)
+
+# תזמון ביצוע
 st.sidebar.markdown("---")
 st.sidebar.subheader("⏱️ תזמון ביצוע פקודות")
 exec_timing = st.sidebar.radio(
@@ -50,6 +70,7 @@ exec_timing = st.sidebar.radio(
     index=0
 )
 
+# ניהול סיכונים Stop Loss
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛑 ניהול סיכונים (Stop Loss)")
 use_sl = st.sidebar.checkbox("הפעל מנגנון Stop Loss", value=True)
@@ -85,30 +106,40 @@ if run_button:
     if not active_tickers:
         st.error("לא נמצאו מניות העונות על סף שווי השוק שנבחר.")
     else:
-        with st.spinner("מושך נתוני מחירים ומריץ סימולציה..."):
-            lookback_days = int(sma_length * 2 + 60)
+        with st.spinner("מושך נתוני מחירים ומחזורי מסחר (Volume) מ-Yahoo Finance..."):
+            lookback_days = int(max(sma_length, rvol_window) * 2 + 60)
             data_start = start_date - timedelta(days=lookback_days)
             all_syms = list(set(active_tickers + ["^GSPC"]))
             
             data = yf.download(all_syms, start=data_start, end=end_date, progress=False)
 
-            if data.empty or "Close" not in data or "Open" not in data:
+            if data.empty or "Close" not in data or "Open" not in data or "Volume" not in data:
                 st.error("שגיאה במשיכת נתוני מניות מ-Yahoo Finance.")
             else:
                 close_df = data["Close"]
                 open_df = data["Open"]
+                vol_df = data["Volume"]
                 
                 indicators = {}
                 for sym in active_tickers:
-                    if sym in close_df.columns and sym in open_df.columns:
+                    if sym in close_df.columns and sym in open_df.columns and sym in vol_df.columns:
                         c_series = close_df[sym].dropna()
                         o_series = open_df[sym].dropna()
-                        if len(c_series) > sma_length:
+                        v_series = vol_df[sym].dropna()
+                        
+                        if len(c_series) > max(sma_length, rvol_window):
                             rsi = compute_rsi(c_series, rsi_period)
                             sma = c_series.rolling(window=sma_length).mean()
+                            
+                            # חישוב RVOL
+                            vol_avg = v_series.rolling(window=rvol_window).mean()
+                            rvol = v_series / vol_avg
+                            
                             indicators[sym] = pd.DataFrame({
                                 "Close": c_series,
                                 "Open": o_series,
+                                "Volume": v_series,
+                                "RVOL": rvol,
                                 "RSI": rsi,
                                 "SMA": sma
                             }).dropna()
@@ -120,7 +151,7 @@ if run_button:
                 portfolio_history = []
                 open_positions = {}
                 closed_trades = []
-                executed_buys = []  # לתיעוד נקודות קנייה על הגרף
+                executed_buys = []
                 
                 pending_buys = []
                 pending_sells = []
@@ -152,25 +183,36 @@ if run_button:
                                 del open_positions[sym]
                         pending_sells = []
 
+                        # ביצוע קניות ממתינות (כולל בדיקת RVOL של יום הקנייה)
                         for buy in pending_buys:
                             sym = buy["ticker"]
                             if sym not in open_positions and day in indicators[sym].index:
-                                entry_px = indicators[sym].loc[day, "Open"]
-                                alloc = buy["allocation"]
-                                if cash >= alloc and alloc > 0 and entry_px > 0:
-                                    shares = alloc / entry_px
-                                    cash -= alloc
-                                    open_positions[sym] = {
-                                        "shares": shares,
-                                        "entry_price": entry_px,
-                                        "cost_basis": alloc,
-                                        "entry_date": day
-                                    }
-                                    executed_buys.append({
-                                        "date": day,
-                                        "ticker": sym,
-                                        "price": entry_px
-                                    })
+                                row_buy = indicators[sym].loc[day]
+                                
+                                # בדיקת RVOL ביום הקנייה אם נבחר
+                                pass_rvol = True
+                                if use_rvol:
+                                    day_rvol = row_buy.get("RVOL", 1.0)
+                                    if day_rvol < min_rvol:
+                                        pass_rvol = False
+                                
+                                if pass_rvol:
+                                    entry_px = row_buy["Open"]
+                                    alloc = buy["allocation"]
+                                    if cash >= alloc and alloc > 0 and entry_px > 0:
+                                        shares = alloc / entry_px
+                                        cash -= alloc
+                                        open_positions[sym] = {
+                                            "shares": shares,
+                                            "entry_price": entry_px,
+                                            "cost_basis": alloc,
+                                            "entry_date": day
+                                        }
+                                        executed_buys.append({
+                                            "date": day,
+                                            "ticker": sym,
+                                            "price": entry_px
+                                        })
                         pending_buys = []
 
                     # 2. שערוך שווי התיק בסגירה
@@ -227,7 +269,7 @@ if run_button:
                     for sym in to_close_today:
                         del open_positions[sym]
 
-                    # 4. בדיקת איתותי כניסה (לפי שווי תיק מצטבר עדכני)
+                    # 4. בדיקת איתותי כניסה
                     for sym in active_tickers:
                         if sym in open_positions or any(b["ticker"] == sym for b in pending_buys) or sym not in indicators:
                             continue
@@ -241,7 +283,13 @@ if run_button:
                                 if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
                                     pending_buys.append({"ticker": sym, "allocation": alloc})
                                 else:
-                                    if cash >= alloc and alloc > 0:
+                                    # בדיקת RVOL עבור Same Day Close
+                                    pass_rvol = True
+                                    if use_rvol:
+                                        if row.get("RVOL", 1.0) < min_rvol:
+                                            pass_rvol = False
+                                            
+                                    if pass_rvol and cash >= alloc and alloc > 0:
                                         px = row["Close"]
                                         shares = alloc / px
                                         cash -= alloc
@@ -279,14 +327,11 @@ if run_button:
                 m3.metric("Alpha (עודף על המדד)", f"{(strat_ret - bm_ret):+.2f}%")
                 m4.metric("Max Drawdown", f"{max_dd:.2f}%")
 
-                # יצירת גרף עם עסקאות (ויזואליה מורחבת)
+                # גרף עם עסקאות
                 fig = go.Figure()
-                
-                # קווי שווי תיק ומדד
                 fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Equity"], mode="lines", name="תיק האסטרטגיה", line=dict(color="#00BA38", width=2.5)))
                 fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Benchmark"], mode="lines", name="S&P 500", line=dict(color="#619CFF", dash="dot")))
 
-                # סמני קנייה (Buy - משולש ירוק למעלה)
                 if executed_buys:
                     buy_dates = [b["date"] for b in executed_buys if b["date"] in df_equity.index]
                     buy_equities = [df_equity.loc[b["date"], "Equity"] for b in executed_buys if b["date"] in df_equity.index]
@@ -302,51 +347,37 @@ if run_button:
                         hovertext=buy_texts
                     ))
 
-                # סמני מכירה (RSI Target מול Stop Loss)
                 if closed_trades:
-                    # יציאות ברווח (RSI Target)
                     tp_trades = [t for t in closed_trades if "Target" in t["סיבת יציאה"] and t["exit_date_raw"] in df_equity.index]
                     if tp_trades:
                         tp_dates = [t["exit_date_raw"] for t in tp_trades]
                         tp_equities = [df_equity.loc[t["exit_date_raw"], "Equity"] for t in tp_trades]
-                        tp_texts = [f"יציאה ברווח (Target): {t['מניה']}<br>תשואה: +{t['תשואה (%)']}% (${t['רווח/הפסד ($)']})" for t in tp_trades]
-                        
+                        tp_texts = [f"יציאה ביעד: {t['מניה']}<br>+{t['תשואה (%)']}% (${t['רווח/הפסד ($)']})" for t in tp_trades]
                         fig.add_trace(go.Scatter(
-                            x=tp_dates,
-                            y=tp_equities,
-                            mode="markers",
-                            name="יציאה ביעד RSI 🎯",
+                            x=tp_dates, y=tp_equities, mode="markers", name="יציאה ביעד RSI 🎯",
                             marker=dict(symbol="circle", size=10, color="#F1C40F", line=dict(width=1, color="white")),
-                            hoverinfo="text",
-                            hovertext=tp_texts
+                            hoverinfo="text", hovertext=tp_texts
                         ))
 
-                    # יציאות ב-Stop Loss
                     sl_trades = [t for t in closed_trades if "Stop" in t["סיבת יציאה"] and t["exit_date_raw"] in df_equity.index]
                     if sl_trades:
                         sl_dates = [t["exit_date_raw"] for t in sl_trades]
                         sl_equities = [df_equity.loc[t["exit_date_raw"], "Equity"] for t in sl_trades]
-                        sl_texts = [f"Stop Loss: {t['מניה']}<br>הפסד: {t['תשואה (%)']}% (${t['רווח/הפסד ($)']})" for t in sl_trades]
-                        
+                        sl_texts = [f"Stop Loss: {t['מניה']}<br>{t['תשואה (%)']}% (${t['רווח/הפסד ($)']})" for t in sl_trades]
                         fig.add_trace(go.Scatter(
-                            x=sl_dates,
-                            y=sl_equities,
-                            mode="markers",
-                            name="יציאה ב-Stop Loss 🛑",
+                            x=sl_dates, y=sl_equities, mode="markers", name="יציאה ב-Stop Loss 🛑",
                             marker=dict(symbol="triangle-down", size=12, color="#E74C3C", line=dict(width=1, color="white")),
-                            hoverinfo="text",
-                            hovertext=sl_texts
+                            hoverinfo="text", hovertext=sl_texts
                         ))
 
                 fig.update_layout(
-                    title=f"שווי תיק, מדד S&P 500 ועסקאות שבוצעו בפועל ({exec_timing})",
+                    title=f"שווי תיק, מדד S&P 500 ועסקאות שבוצעו ({exec_timing})",
                     template="plotly_dark",
                     hovermode="closest",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # יומן עסקאות מפורט
                 with st.expander("📋 יומן עסקאות מפורט", expanded=True):
                     if closed_trades:
                         clean_trades = [{k: v for k, v in t.items() if k != "exit_date_raw"} for t in closed_trades]
