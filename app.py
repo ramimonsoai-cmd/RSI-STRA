@@ -5,10 +5,10 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="סימולטור מסחר עם Breakeven Trailing", layout="wide")
+st.set_page_config(page_title="סימולטור מסחר עם Trailing Stop גמיש", layout="wide")
 
-st.title("📈 סימולטור מסחר: מימוש 50% + Trailing Stop מוגן Breakeven")
-st.caption("מנגנון נעילת מחיר כניסה לחצי הנותר המונע ירידה להפסד, ניהול פוזיציה והשוואה ל-S&P 500")
+st.title("📈 סימולטור מסחר: מימוש 50% + Trailing Stop הדוק (החל מ-0.5%)")
+st.caption("ניהול פוזיציה גמיש, נעילת Breakeven, סטופ זמן והשוואה ל-S&P 500")
 
 # מאגר מניות מגה-קאפ
 STOCK_MARKET_CAPS = {
@@ -46,16 +46,23 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 2. ניהול מימושים ויציאות")
 
 use_scale_out = st.sidebar.checkbox("1. מימוש 50% ביעד RSI + Trailing Stop לחצי הנותר", value=True)
+
+# הסליידר המעודכן החל מ-0.5%
 trailing_pct = st.sidebar.slider(
     "מרחק Trailing Stop מהשיא לחצי הנותר (%):",
-    min_value=2.0, max_value=15.0, value=5.0, step=0.5,
-    disabled=not use_scale_out
+    min_value=0.5,
+    max_value=15.0,
+    value=1.0,
+    step=0.1,
+    disabled=not use_scale_out,
+    help="מרחק נסיגה מהשיא לסגירת החצי הנותר. ניתן לרדת עד 0.5% ליציאות מהירות."
 )
+
 lock_breakeven = st.sidebar.checkbox(
     "🔒 נעל רצפת איזון (Breakeven Floor)",
     value=True,
     disabled=not use_scale_out,
-    help="מבטיח שהסטופ של החצי השני לעולם לא ירד מתחת למחיר הקנייה המקורי (מונע הפסד לחצי השני)."
+    help="מבטיח שהסטופ של החצי השני לעולם לא ירד מתחת למחיר הקנייה המקורי."
 )
 
 use_time_stop = st.sidebar.checkbox("2. יציאה מעסקה שלא פרצה לאחר מספר ימים (Time Stop)", value=True)
@@ -102,6 +109,7 @@ def compute_rsi(series, period=14):
 active_tickers = [sym for sym, cap in STOCK_MARKET_CAPS.items() if cap >= min_cap]
 st.info(f"נמצאו **{len(active_tickers)}** חברות מעל סף שווי שוק של **${min_cap}B**")
 
+# --- הרצת הסימולציה ---
 if run_button:
     if not active_tickers:
         st.error("לא נמצאו מניות העונות על סף שווי השוק שנבחר.")
@@ -264,14 +272,13 @@ if run_button:
                             if pos["scaled_out"] and use_scale_out:
                                 trailing_stop_price = pos["peak_after_scale"] * (1.0 - (trailing_pct / 100.0))
                                 
-                                # הגנת Breakeven: לא יורד מתחת למחיר הכניסה
                                 if lock_breakeven:
                                     effective_stop_price = max(trailing_stop_price, pos["entry_price"])
                                 else:
                                     effective_stop_price = trailing_stop_price
 
                                 if cur_px <= effective_stop_price:
-                                    reason_label = "Trailing Stop (נעול באיזון) 🔒" if (cur_px <= pos["entry_price"] and lock_breakeven) else "Trailing Stop ל-50% הנותרים 📈"
+                                    reason_label = "Trailing Stop (נעול באיזון) 🔒" if (cur_px <= pos["entry_price"] and lock_breakeven) else f"Trailing Stop {trailing_pct}% 📈"
                                     sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": reason_label})
 
                     # ביצוע המכירות
@@ -369,7 +376,7 @@ if run_button:
                 fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Benchmark"], mode="lines", name="S&P 500", line=dict(color="#619CFF", dash="dot")))
 
                 fig.update_layout(
-                    title="שווי תיק מול S&P 500 (מימוש חלקי + נעילת Breakeven)",
+                    title="שווי תיק מול S&P 500 (מימוש חלקי + Trailing Stop הדוק)",
                     template="plotly_dark",
                     hovermode="x unified"
                 )
