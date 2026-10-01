@@ -5,10 +5,10 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="סימולטור מסחר עם Trailing Stop גמיש", layout="wide")
+st.set_page_config(page_title="סימולטור מסחר עם סינון שוק SPY", layout="wide")
 
-st.title("📈 סימולטור מסחר: מימוש 50% + Trailing Stop הדוק (החל מ-0.5%)")
-st.caption("ניהול פוזיציה גמיש, נעילת Breakeven, סטופ זמן והשוואה ל-S&P 500")
+st.title("📈 סימולטור מסחר: RSI + SMA + מימוש 50% + סינון שוק SPY")
+st.caption("ניהול פוזיציה מתקדם, בדיקת מגמת השוק הכללי (SPY > SMA 200) והשוואה ל-S&P 500")
 
 # מאגר מניות מגה-קאפ
 STOCK_MARKET_CAPS = {
@@ -39,15 +39,22 @@ with col_c1:
 with col_c2:
     position_pct = st.sidebar.number_input("גודל כניסה (% מהתיק)", min_value=2.0, max_value=100.0, value=10.0, step=1.0) / 100.0
 
-use_sma = st.sidebar.checkbox("כניסה רק מעל SMA", value=True)
-sma_length = st.sidebar.number_input("אורך SMA", min_value=20, max_value=300, value=200, step=10, disabled=not use_sma)
+# תנאי ממוצע נע של המניה הבודדת
+use_sma = st.sidebar.checkbox("כניסה רק כאשר המניה מעל SMA שלה", value=True)
+sma_length = st.sidebar.number_input("אורך SMA של המניה", min_value=20, max_value=300, value=200, step=10, disabled=not use_sma)
+
+# תנאי חדש: מדד SPY מעל SMA 200
+use_spy_filter = st.sidebar.checkbox(
+    "🌐 סינון שוק: כניסה רק כאשר SPY נסחר מעל SMA 200", 
+    value=True,
+    help="מונע פתיחת עסקאות חדשות כאשר השוק הכללי נמצא במגמת ירידה או בשוק דובי."
+)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 2. ניהול מימושים ויציאות")
 
 use_scale_out = st.sidebar.checkbox("1. מימוש 50% ביעד RSI + Trailing Stop לחצי הנותר", value=True)
 
-# הסליידר המעודכן החל מ-0.5%
 trailing_pct = st.sidebar.slider(
     "מרחק Trailing Stop מהשיא לחצי הנותר (%):",
     min_value=0.5,
@@ -114,10 +121,12 @@ if run_button:
     if not active_tickers:
         st.error("לא נמצאו מניות העונות על סף שווי השוק שנבחר.")
     else:
-        with st.spinner("מושך נתוני מסחר ומחשב אינדיקטורים..."):
-            max_lookback = int(sma_length * 2 + 60)
+        with st.spinner("מושך נתוני מסחר (מניות + SPY) ומחשב אינדיקטורים..."):
+            max_lookback = int(max(sma_length, 200) * 2 + 60)
             data_start = start_date - timedelta(days=max_lookback)
-            all_syms = list(set(active_tickers + ["^GSPC"]))
+            
+            # הוספת SPY ו-^GSPC להורדה
+            all_syms = list(set(active_tickers + ["SPY", "^GSPC"]))
             
             data = yf.download(all_syms, start=data_start, end=end_date, progress=False)
 
@@ -127,6 +136,12 @@ if run_button:
                 close_df = data["Close"]
                 open_df = data["Open"]
                 
+                # חישוב נתוני SPY
+                spy_series = close_df["SPY"].dropna()
+                spy_sma200 = spy_series.rolling(window=200).mean()
+                spy_filter_series = spy_series > spy_sma200
+
+                # חישוב אינדיקטורים לכל מניה
                 indicators = {}
                 for sym in active_tickers:
                     if sym in close_df.columns and sym in open_df.columns:
@@ -315,38 +330,47 @@ if run_button:
                             if pos["shares"] <= 0.0001:
                                 del open_positions[sym]
 
-                    # 4. בדיקת איתותי כניסה
-                    for sym in active_tickers:
-                        if sym in open_positions or any(b["ticker"] == sym for b in pending_buys) or sym not in indicators:
-                            continue
-                        if day in indicators[sym].index:
-                            row = indicators[sym].loc[day]
-                            c_rsi = row["RSI"] < rsi_entry
-                            c_sma = (row["Close"] > row["SMA"]) if use_sma else True
+                    # 4. בדיקת איתותי כניסה (כולל תנאי SPY > SMA 200)
+                    is_spy_bullish = True
+                    if use_spy_filter:
+                        if day in spy_filter_series.index:
+                            is_spy_bullish = bool(spy_filter_series.loc[day])
+                        else:
+                            is_spy_bullish = False
 
-                            if c_rsi and c_sma:
-                                alloc = total_equity * position_pct
-                                if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
-                                    pending_buys.append({"ticker": sym, "allocation": alloc})
-                                else:
-                                    if cash >= alloc and alloc > 0:
-                                        px = row["Close"]
-                                        shares = alloc / px
-                                        cash -= alloc
-                                        open_positions[sym] = {
-                                            "shares": shares,
-                                            "entry_price": px,
-                                            "cost_basis": alloc,
-                                            "entry_date": day,
-                                            "days_held": 0,
-                                            "scaled_out": False,
-                                            "peak_after_scale": px
-                                        }
-                                        executed_buys.append({
-                                            "date": day,
-                                            "ticker": sym,
-                                            "price": px
-                                        })
+                    # אם השוק כולו לא מעל SMA 200, לא נכנסים לאף עסקה חדשה
+                    if is_spy_bullish:
+                        for sym in active_tickers:
+                            if sym in open_positions or any(b["ticker"] == sym for b in pending_buys) or sym not in indicators:
+                                continue
+                            if day in indicators[sym].index:
+                                row = indicators[sym].loc[day]
+                                c_rsi = row["RSI"] < rsi_entry
+                                c_sma = (row["Close"] > row["SMA"]) if use_sma else True
+
+                                if c_rsi and c_sma:
+                                    alloc = total_equity * position_pct
+                                    if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
+                                        pending_buys.append({"ticker": sym, "allocation": alloc})
+                                    else:
+                                        if cash >= alloc and alloc > 0:
+                                            px = row["Close"]
+                                            shares = alloc / px
+                                            cash -= alloc
+                                            open_positions[sym] = {
+                                                "shares": shares,
+                                                "entry_price": px,
+                                                "cost_basis": alloc,
+                                                "entry_date": day,
+                                                "days_held": 0,
+                                                "scaled_out": False,
+                                                "peak_after_scale": px
+                                            }
+                                            executed_buys.append({
+                                                "date": day,
+                                                "ticker": sym,
+                                                "price": px
+                                            })
 
                 # חישוב תוצאות
                 df_equity = pd.DataFrame(portfolio_history).set_index("Date")
@@ -376,7 +400,7 @@ if run_button:
                 fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Benchmark"], mode="lines", name="S&P 500", line=dict(color="#619CFF", dash="dot")))
 
                 fig.update_layout(
-                    title="שווי תיק מול S&P 500 (מימוש חלקי + Trailing Stop הדוק)",
+                    title="שווי תיק מול S&P 500 (כולל סינון שוק SPY מעל SMA 200)",
                     template="plotly_dark",
                     hovermode="x unified"
                 )
