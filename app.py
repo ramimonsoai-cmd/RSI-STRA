@@ -5,10 +5,10 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="סימולטור מסחר עם סינון שוק SPY", layout="wide")
+st.set_page_config(page_title="סימולטור מסחר כמותי מוסדי", layout="wide")
 
-st.title("📈 סימולטור מסחר: RSI + SMA + מימוש 50% + סינון שוק SPY")
-st.caption("ניהול פוזיציה מתקדם, בדיקת מגמת השוק הכללי (SPY > SMA 200) והשוואה ל-S&P 500")
+st.title("📈 סימולטור מסחר כמותי: ניתוח ביצועים מוסדי מלא")
+st.caption("ניתוח תיק מקיף: Sharpe, Sortino, Profit Factor, Calmar, Win Rate והשוואה ל-S&P 500")
 
 # מאגר מניות מגה-קאפ
 STOCK_MARKET_CAPS = {
@@ -39,45 +39,20 @@ with col_c1:
 with col_c2:
     position_pct = st.sidebar.number_input("גודל כניסה (% מהתיק)", min_value=2.0, max_value=100.0, value=10.0, step=1.0) / 100.0
 
-# תנאי ממוצע נע של המניה הבודדת
 use_sma = st.sidebar.checkbox("כניסה רק כאשר המניה מעל SMA שלה", value=True)
 sma_length = st.sidebar.number_input("אורך SMA של המניה", min_value=20, max_value=300, value=200, step=10, disabled=not use_sma)
 
-# תנאי חדש: מדד SPY מעל SMA 200
-use_spy_filter = st.sidebar.checkbox(
-    "🌐 סינון שוק: כניסה רק כאשר SPY נסחר מעל SMA 200", 
-    value=True,
-    help="מונע פתיחת עסקאות חדשות כאשר השוק הכללי נמצא במגמת ירידה או בשוק דובי."
-)
+use_spy_filter = st.sidebar.checkbox("🌐 סינון שוק: כניסה רק כאשר SPY נסחר מעל SMA 200", value=True)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 2. ניהול מימושים ויציאות")
 
 use_scale_out = st.sidebar.checkbox("1. מימוש 50% ביעד RSI + Trailing Stop לחצי הנותר", value=True)
-
-trailing_pct = st.sidebar.slider(
-    "מרחק Trailing Stop מהשיא לחצי הנותר (%):",
-    min_value=0.5,
-    max_value=15.0,
-    value=1.0,
-    step=0.1,
-    disabled=not use_scale_out,
-    help="מרחק נסיגה מהשיא לסגירת החצי הנותר. ניתן לרדת עד 0.5% ליציאות מהירות."
-)
-
-lock_breakeven = st.sidebar.checkbox(
-    "🔒 נעל רצפת איזון (Breakeven Floor)",
-    value=True,
-    disabled=not use_scale_out,
-    help="מבטיח שהסטופ של החצי השני לעולם לא ירד מתחת למחיר הקנייה המקורי."
-)
+trailing_pct = st.sidebar.slider("מרחק Trailing Stop מהשיא לחצי הנותר (%):", min_value=0.5, max_value=15.0, value=1.0, step=0.1, disabled=not use_scale_out)
+lock_breakeven = st.sidebar.checkbox("🔒 נעל רצפת איזון (Breakeven Floor)", value=True, disabled=not use_scale_out)
 
 use_time_stop = st.sidebar.checkbox("2. יציאה מעסקה שלא פרצה לאחר מספר ימים (Time Stop)", value=True)
-max_holding_days = st.sidebar.number_input(
-    "מספר ימי מסחר מקסימלי ללא פריצה:",
-    min_value=3, max_value=40, value=12, step=1,
-    disabled=not use_time_stop
-)
+max_holding_days = st.sidebar.number_input("מספר ימי מסחר מקסימלי ללא פריצה:", min_value=3, max_value=40, value=12, step=1, disabled=not use_time_stop)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛑 3. Stop Loss הגנתי ראשוני")
@@ -121,27 +96,23 @@ if run_button:
     if not active_tickers:
         st.error("לא נמצאו מניות העונות על סף שווי השוק שנבחר.")
     else:
-        with st.spinner("מושך נתוני מסחר (מניות + SPY) ומחשב אינדיקטורים..."):
+        with st.spinner("מושך נתוני מסחר מ-Yahoo Finance ומחשב אינדיקטורים..."):
             max_lookback = int(max(sma_length, 200) * 2 + 60)
             data_start = start_date - timedelta(days=max_lookback)
-            
-            # הוספת SPY ו-^GSPC להורדה
             all_syms = list(set(active_tickers + ["SPY", "^GSPC"]))
             
             data = yf.download(all_syms, start=data_start, end=end_date, progress=False)
 
             if data.empty or "Close" not in data or "Open" not in data:
-                st.error("שגיאה במשיכת נתונים מ-Yahoo Finance.")
+                st.error("שגיאה במשיכת נתונים.")
             else:
                 close_df = data["Close"]
                 open_df = data["Open"]
                 
-                # חישוב נתוני SPY
                 spy_series = close_df["SPY"].dropna()
                 spy_sma200 = spy_series.rolling(window=200).mean()
                 spy_filter_series = spy_series > spy_sma200
 
-                # חישוב אינדיקטורים לכל מניה
                 indicators = {}
                 for sym in active_tickers:
                     if sym in close_df.columns and sym in open_df.columns:
@@ -170,7 +141,7 @@ if run_button:
                 pending_sells = []
 
                 for day in trading_days:
-                    # 1. ביצוע פקודות שממתינות מהיום הקודם (Next Day Open)
+                    # 1. ביצוע פקודות שממתינות מהיום הקודם
                     if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
                         for sell in pending_sells:
                             sym = sell["ticker"]
@@ -249,12 +220,11 @@ if run_button:
                         if day in indicators[sym].index:
                             row = indicators[sym].loc[day]
                             cur_px = row["Close"]
-                            cur_val = pos["shares"] * cur_px
                             cost = pos["shares"] * pos["entry_price"]
+                            cur_val = pos["shares"] * cur_px
                             pnl_dollar = cur_val - cost
                             pnl_pct = (cur_px / pos["entry_price"]) - 1.0
 
-                            # א. Stop Loss ראשוני
                             hit_sl = False
                             if use_sl:
                                 if sl_pct_val is not None and pnl_pct <= -sl_pct_val:
@@ -266,13 +236,11 @@ if run_button:
                                 sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "Stop Loss 🛑"})
                                 continue
 
-                            # ב. Time Stop
                             if use_time_stop and not pos["scaled_out"]:
                                 if pos["days_held"] >= max_holding_days:
                                     sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "Time Stop (לא פרצה) ⏳"})
                                     continue
 
-                            # ג. יעד RSI ראשון
                             if row["RSI"] >= rsi_exit and not pos["scaled_out"]:
                                 if use_scale_out:
                                     half_shares = pos["shares"] * 0.5
@@ -283,20 +251,14 @@ if run_button:
                                     sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "RSI Target 100% 🎯"})
                                 continue
 
-                            # ד. Trailing Stop מוגן Breakeven ל-50% הנותרים
                             if pos["scaled_out"] and use_scale_out:
                                 trailing_stop_price = pos["peak_after_scale"] * (1.0 - (trailing_pct / 100.0))
-                                
-                                if lock_breakeven:
-                                    effective_stop_price = max(trailing_stop_price, pos["entry_price"])
-                                else:
-                                    effective_stop_price = trailing_stop_price
+                                effective_stop_price = max(trailing_stop_price, pos["entry_price"]) if lock_breakeven else trailing_stop_price
 
                                 if cur_px <= effective_stop_price:
                                     reason_label = "Trailing Stop (נעול באיזון) 🔒" if (cur_px <= pos["entry_price"] and lock_breakeven) else f"Trailing Stop {trailing_pct}% 📈"
                                     sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": reason_label})
 
-                    # ביצוע המכירות
                     for s in sells_to_process:
                         sym = s["ticker"]
                         if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
@@ -308,7 +270,6 @@ if run_button:
                             shares_selling = s["shares"]
                             proceeds = shares_selling * cur_px
                             cost_of_these = shares_selling * pos["entry_price"]
-                            
                             cash += proceeds
                             pnl_d = proceeds - cost_of_these
                             pnl_p = (cur_px / pos["entry_price"]) - 1.0
@@ -330,15 +291,11 @@ if run_button:
                             if pos["shares"] <= 0.0001:
                                 del open_positions[sym]
 
-                    # 4. בדיקת איתותי כניסה (כולל תנאי SPY > SMA 200)
+                    # 4. בדיקת כניסות חדשות
                     is_spy_bullish = True
                     if use_spy_filter:
-                        if day in spy_filter_series.index:
-                            is_spy_bullish = bool(spy_filter_series.loc[day])
-                        else:
-                            is_spy_bullish = False
+                        is_spy_bullish = bool(spy_filter_series.loc[day]) if day in spy_filter_series.index else False
 
-                    # אם השוק כולו לא מעל SMA 200, לא נכנסים לאף עסקה חדשה
                     if is_spy_bullish:
                         for sym in active_tickers:
                             if sym in open_positions or any(b["ticker"] == sym for b in pending_buys) or sym not in indicators:
@@ -366,13 +323,9 @@ if run_button:
                                                 "scaled_out": False,
                                                 "peak_after_scale": px
                                             }
-                                            executed_buys.append({
-                                                "date": day,
-                                                "ticker": sym,
-                                                "price": px
-                                            })
+                                            executed_buys.append({"date": day, "ticker": sym, "price": px})
 
-                # חישוב תוצאות
+                # --- חישוב מדדי ביצוע מוסדיים (Institutional Quant Analytics) ---
                 df_equity = pd.DataFrame(portfolio_history).set_index("Date")
                 bm_start = benchmark_close.iloc[0]
                 df_equity["Benchmark"] = (benchmark_close / bm_start) * initial_capital
@@ -382,19 +335,132 @@ if run_button:
                 strat_ret = ((strat_final / initial_capital) - 1) * 100
                 bm_ret = ((bm_final / initial_capital) - 1) * 100
 
+                # תשואות יומיות
+                df_equity["Daily_Return"] = df_equity["Equity"].pct_change().fillna(0)
+                df_equity["BM_Daily_Return"] = df_equity["Benchmark"].pct_change().fillna(0)
+
+                # שארפ (Sharpe Ratio) - בהנחת ריבית חסרת סיכון 4.0% שנתית
+                rf_daily = (1 + 0.04) ** (1/252) - 1
+                excess_returns = df_equity["Daily_Return"] - rf_daily
+                daily_std = df_equity["Daily_Return"].std()
+                sharpe_ratio = (excess_returns.mean() / daily_std * np.sqrt(252)) if daily_std > 0 else 0.0
+
+                # סורטינו (Sortino Ratio) - תנודתיות שלילית בלבד
+                downside_returns = df_equity["Daily_Return"][df_equity["Daily_Return"] < 0]
+                downside_std = downside_returns.std()
+                sortino_ratio = (excess_returns.mean() / downside_std * np.sqrt(252)) if (downside_std > 0 and not np.isnan(downside_std)) else 0.0
+
+                # Drawdown ו-Calmar
                 roll_max = df_equity["Equity"].cummax()
                 dd = (df_equity["Equity"] - roll_max) / roll_max
                 max_dd = dd.min() * 100
 
-                # KPI Metrics
-                st.markdown("---")
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("שווי תיק סופי", f"${strat_final:,.2f}", delta=f"{strat_ret:.2f}%")
-                m2.metric("תשואת S&P 500", f"${bm_final:,.2f}", delta=f"{bm_ret:.2f}%")
-                m3.metric("Alpha (עודף על המדד)", f"{(strat_ret - bm_ret):+.2f}%")
-                m4.metric("Max Drawdown", f"{max_dd:.2f}%")
+                # CAGR
+                total_days = max((end_date - start_date).days, 1)
+                years = total_days / 365.25
+                cagr = ((strat_final / initial_capital) ** (1 / years) - 1) * 100 if years > 0 else 0.0
+                calmar_ratio = abs(cagr / max_dd) if abs(max_dd) > 0 else 0.0
 
-                # גרף
+                # סטטיסטיקת עסקאות: Win Rate, Profit Factor, Payoff Ratio
+                df_trades = pd.DataFrame(closed_trades) if closed_trades else pd.DataFrame()
+                if not df_trades.empty:
+                    wins = df_trades[df_trades["רווח/הפסד ($)"] > 0]
+                    losses = df_trades[df_trades["רווח/הפסד ($)"] < 0]
+
+                    win_count = len(wins)
+                    total_count = len(df_trades)
+                    win_rate = (win_count / total_count) * 100
+
+                    gross_profit = wins["רווח/הפסד ($)"].sum()
+                    gross_loss = abs(losses["רווח/הפסד ($)"].sum())
+
+                    # Profit Factor
+                    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (999.0 if gross_profit > 0 else 0.0)
+
+                    # Payoff Ratio
+                    avg_win = wins["רווח/הפסד ($)"].mean() if win_count > 0 else 0.0
+                    avg_loss = abs(losses["רווח/הפסד ($)"].mean()) if len(losses) > 0 else 0.0
+                    payoff_ratio = (avg_win / avg_loss) if avg_loss > 0 else 999.0
+                    avg_hold_days = df_trades["ימי החזקה"].mean()
+                else:
+                    win_rate, profit_factor, payoff_ratio, avg_win, avg_loss, avg_hold_days = 0, 0, 0, 0, 0, 0
+
+                # --- 1. הצגת KPIs מרכזיים עליונים ---
+                st.markdown("---")
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                col_m1.metric("שווי תיק סופי", f"${strat_final:,.2f}", delta=f"{strat_ret:.2f}%")
+                col_m2.metric("תשואת מדד S&P 500", f"${bm_final:,.2f}", delta=f"{bm_ret:.2f}%")
+                col_m3.metric("Alpha (עודף על המדד)", f"{(strat_ret - bm_ret):+.2f}%")
+                col_m4.metric("Max Drawdown (נסיגה משיא)", f"{max_dd:.2f}%")
+
+                # --- 2. אזור ייעודי: מדדי איכות ניהול תיק וסיכון (Institutional Quant Metrics) ---
+                st.markdown("### 📊 מדדי איכות ניהול תיק וסיכון (Institutional Metrics)")
+                
+                q1, q2, q3, q4, q5, q6 = st.columns(6)
+                q1.metric("שיעור הצלחה (Win Rate)", f"{win_rate:.1f}%", help="אחוז פעולות המכירה שהסתיימו ברווח")
+                q2.metric("Profit Factor (PF)", f"{profit_factor:.2f}", help="יחס סך הרווחים בדולרים חלקי סך ההפסדים. מעל 1.5 נחשב טוב מאוד, מעל 2.0 מעולה.")
+                q3.metric("מדד שארפ (Sharpe)", f"{sharpe_ratio:.2f}", help="תשואה עודפת ליחידת סיכון/תנודתיות שנתית (Rf=4%). מעל 1.0 טוב, מעל 1.5 מצוין.")
+                q4.metric("מדד סורטינו (Sortino)", f"{sortino_ratio:.2f}", help="תשואה מול תנודתיות שלילית בלבד. מדד מדויק יותר לאסטרטגיות מומנטום.")
+                q5.metric("מדד קלמר (Calmar)", f"{calmar_ratio:.2f}", help="תשואה שנתית מורכבת (CAGR) חלקי הנסיגה המקסימלית (MaxDD).")
+                q6.metric("Payoff Ratio (יחס רווח/הפסד)", f"{payoff_ratio:.2f}", help="ממוצע דולרי בעסקה מנצחת חלקי ממוצע בעסקה מפסידה.")
+
+                # טבלת סיכום מקיפה הכוללת אינדיקציה, סף ייחוס והסבר בעברית
+                perf_summary = pd.DataFrame({
+                    "מדד": [
+                        "Win Rate (שיעור הצלחה)",
+                        "Profit Factor (PF)",
+                        "Sharpe Ratio (מדד שארפ)",
+                        "Sortino Ratio (מדד סורטינו)",
+                        "Calmar Ratio (מדד קלמר)",
+                        "Payoff Ratio (יחס רווח/הפסד)",
+                        "Max Drawdown (נסיגה מקסימלית)",
+                        "זמן החזקה ממוצע"
+                    ],
+                    "ערך בתיק שלך": [
+                        f"{win_rate:.1f}%",
+                        f"{profit_factor:.2f}",
+                        f"{sharpe_ratio:.2f}",
+                        f"{sortino_ratio:.2f}",
+                        f"{calmar_ratio:.2f}",
+                        f"{payoff_ratio:.2f}",
+                        f"{max_dd:.2f}%",
+                        f"{avg_hold_days:.1f} ימים"
+                    ],
+                    "סף ייחוס מקצועי": [
+                        "> 60% (לאסטרטגיות RSI)",
+                        "> 1.60",
+                        "> 1.20",
+                        "> 1.80",
+                        "> 1.20",
+                        "> 1.30",
+                        "< 10.0%",
+                        "3 – 15 ימי מסחר"
+                    ],
+                    "אינדיקציה": [
+                        "מעולה 🚀" if win_rate >= 70 else ("טוב מאוד ✅" if win_rate >= 60 else "גבולי ⚠️"),
+                        "פנומנלי 🚀" if profit_factor >= 2.5 else ("מעולה ✅" if profit_factor >= 1.7 else "נמוך מדי ⚠️"),
+                        "תשואה מעולה ביחס לסיכון 🚀" if sharpe_ratio >= 1.5 else ("ניהול סיכונים טוב ✅" if sharpe_ratio >= 1.0 else "תנודתיות גבוהה ביחס לתשואה ⚠️"),
+                        "תנודתיות שלילית אפסית 🚀" if sortino_ratio >= 2.0 else ("יציב מאוד ✅" if sortino_ratio >= 1.4 else "נסיגות חדות ⚠️"),
+                        "יציבות גבוהה מול ירידות 🚀" if calmar_ratio >= 1.8 else ("סביר ✅" if calmar_ratio >= 1.0 else "עומק נפילה מדאיג ⚠️"),
+                        "רווחים גדולים מהפסדים 🚀" if payoff_ratio >= 1.5 else ("רווח ממוצע שווה להפסד ✅" if payoff_ratio >= 1.0 else "הפסדים ממוצעים גדולים מהרווח ⚠️"),
+                        "רמת סיכון נמוכה ומבוקרת 🚀" if abs(max_dd) <= 7.0 else ("נסיגה סבירה לשוק מניות ✅" if abs(max_dd) <= 12.0 else "נסיגה עמוקה ⚠️"),
+                        "שחרור מהיר של מזומן 🚀" if avg_hold_days <= 10 else ("מחזור הון תקין ✅" if avg_hold_days <= 20 else "כסף תקוע לזמן רב ⚠️")
+                    ],
+                    "מה המשמעות של המדד?": [
+                        "אחוז העסקאות שהניבו רווח מתוך סך הפעולות שבוצעו.",
+                        "כמה דולרים הרווחת על כל דולר שהפסדת במצטבר (סך רווח / סך הפסד).",
+                        "מודד האם התשואה נובעת מאיכות המסחר או מרכבת הרים מסוכנת (מול ריבית חסרת סיכון).",
+                        "בדומה לשארפ, אך מעניש רק על ירידות והפסדים (ולא על זינוקים למעלה).",
+                        "היחס בין קצב התשואה השנתי (CAGR) לעומק הנפילה המקסימלית שחווית.",
+                        "הרווח הממוצע בטרייד מנצח חלקי ההפסד הממוצע בטרייד מפסיד.",
+                        "הירידה החדה ביותר בתיק משיא כל הזמנים שלו עד לנקודת השפל.",
+                        "משך הזמן הממוצע שבו הון התיק היה מושקע בפוזיציה עד למימוש."
+                    ]
+                })
+                st.table(perf_summary)
+
+                # --- 3. גרף תשואה והשוואה ---
+                st.markdown("### 📈 עקומת שווי התיק (Equity Curve)")
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Equity"], mode="lines", name="תיק האסטרטגיה", line=dict(color="#00BA38", width=2.5)))
                 fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Benchmark"], mode="lines", name="S&P 500", line=dict(color="#619CFF", dash="dot")))
@@ -406,13 +472,12 @@ if run_button:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # יומן עסקאות
-                with st.expander("📋 יומן עסקאות מפורט", expanded=True):
-                    if closed_trades:
+                # --- 4. יומן עסקאות מפורט ---
+                with st.expander("📋 יומן עסקאות מפורט (כולל פירוט מימושים וימי החזקה)", expanded=False):
+                    if not df_trades.empty:
                         clean_trades = [{k: v for k, v in t.items() if k != "exit_date_raw"} for t in closed_trades]
                         df_tr = pd.DataFrame(clean_trades)
-                        wins = len(df_tr[df_tr["רווח/הפסד ($)"] >= 0])
-                        st.write(f"**סה\"כ פעולות מכירה:** {len(df_tr)} | **שיעור פעולות ללא הפסד:** {(wins / len(df_tr))*100:.1f}%")
+                        st.write(f"**סה\"כ פעולות מכירה:** {len(df_tr)} | **ממוצע רווח לעסקה מנצחת:** ${avg_win:.2f} | **ממוצע הפסד לעסקה מפסידה:** ${avg_loss:.2f}")
                         st.dataframe(df_tr, use_container_width=True)
                     else:
                         st.info("לא נסגרו עסקאות בתקופה זו.")
