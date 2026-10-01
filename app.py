@@ -5,10 +5,10 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="סימולטור מסחר מתקדם", layout="wide")
+st.set_page_config(page_title="סימולטור מסחר: מימוש חלקי וסטופ זמן", layout="wide")
 
-st.title("📈 סימולטור מסחר מתקדם: ניהול יציאות, Trailing Stop וזמן")
-st.caption("סימולציה מבוססת שווי שוק, Trailing Stop דינמי, סטופ זמן והשוואה ל-S&P 500")
+st.title("📈 סימולטור מסחר חי: מימוש 50% + Trailing לחצי הנותר + סטופ זמן")
+st.caption("ניהול פוזיציה מקצועי, שחרור הון תקוע והשוואה למדד S&P 500")
 
 # מאגר מניות מגה-קאפ
 STOCK_MARKET_CAPS = {
@@ -21,62 +21,56 @@ STOCK_MARKET_CAPS = {
     "WFC": 190, "DIS": 180, "GE": 180, "INTU": 180, "CAT": 170, "IBM": 170
 }
 
-# --- סרגל צד: פרמטרים ---
-st.sidebar.header("⚙️ הגדרות אסטרטגיה בסיסיות")
+# --- סרגל צד: הגדרות ---
+st.sidebar.header("⚙️ 1. כללי כניסה והון")
 
-# 1. שווי שוק
-min_cap = st.sidebar.slider("1. שווי שוק מינימלי ($B)", min_value=150, max_value=500, value=200, step=25)
+# שווי שוק
+min_cap = st.sidebar.slider("שווי שוק מינימלי ($B)", min_value=150, max_value=500, value=200, step=25)
 
-# 2 + 3. RSI
+# RSI כניסה
 col_rsi1, col_rsi2 = st.sidebar.columns(2)
 with col_rsi1:
-    rsi_entry = st.sidebar.number_input("2. RSI כניסה (<)", min_value=15, max_value=45, value=40, step=1)
+    rsi_entry = st.sidebar.number_input("RSI כניסה (<)", min_value=15, max_value=45, value=40, step=1)
 with col_rsi2:
-    rsi_exit = st.sidebar.number_input("3. RSI יציאה (>=)", min_value=50, max_value=85, value=60, step=1)
+    rsi_exit = st.sidebar.number_input("RSI יעד ראשון (>=)", min_value=50, max_value=85, value=60, step=1)
 rsi_period = st.sidebar.slider("תקופת RSI (ימים)", min_value=7, max_value=28, value=14)
 
-# 4 + 5. הון והקצאה
+# הון והקצאה
 col_c1, col_c2 = st.sidebar.columns(2)
 with col_c1:
-    initial_capital = st.sidebar.number_input("4. הון התחלתי ($)", min_value=1000, max_value=500000, value=10000, step=1000)
+    initial_capital = st.sidebar.number_input("הון התחלתי ($)", min_value=1000, max_value=500000, value=10000, step=1000)
 with col_c2:
-    position_pct = st.sidebar.number_input("5. גודל עסקה (% מהתיק)", min_value=2.0, max_value=100.0, value=10.0, step=1.0) / 100.0
+    position_pct = st.sidebar.number_input("גודל כניסה (% מהתיק)", min_value=2.0, max_value=100.0, value=10.0, step=1.0) / 100.0
 
-# 6. ממוצע נע SMA
-use_sma = st.sidebar.checkbox("6. כניסה רק כאשר המחיר מעל SMA", value=True)
+# ממוצע נע
+use_sma = st.sidebar.checkbox("כניסה רק מעל SMA", value=True)
 sma_length = st.sidebar.number_input("אורך SMA", min_value=20, max_value=300, value=200, step=10, disabled=not use_sma)
 
-# --- אסטרטגיות יציאה מתקדמות (חדש!) ---
+# --- 2 התוספות המבוקשות ---
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 ניהול יציאות מתקדם (Exits)")
+st.sidebar.subheader("🎯 2. ניהול מימושים ויציאות (התוספות החדשות)")
 
-# א. Trailing Stop
-use_trailing = st.sidebar.checkbox("הפעל סטופ נגרר (Trailing Stop)", value=False)
+# תוספת 1: מימוש 50% + Trailing לחצי הנותר
+use_scale_out = st.sidebar.checkbox("1. מימוש 50% ביעד RSI + Trailing Stop ל-50% הנותרים", value=True)
 trailing_pct = st.sidebar.slider(
-    "מרחק נסיגה מהשיא לסגירה (%):",
-    min_value=1.0, max_value=15.0, value=5.0, step=0.5,
-    disabled=not use_trailing,
-    help="אם המניה יורדת באחוז זה מהשיא שנרשם מאז הכניסה – הפוזיציה נסגרת."
-)
-trailing_mode = st.sidebar.radio(
-    "מתי להפעיל את ה-Trailing Stop?",
-    options=["מהיום הראשון של העסקה", "רק לאחר הגעה ליעד RSI (מאפשר למנצחים לרוץ)"],
-    disabled=not use_trailing,
-    help="האפשרות השנייה מחליפה את היציאה הרגילה ב-RSI בנעילת רווחים דינמית."
+    "מרחק Trailing Stop מהשיא לחצי הנותר (%):",
+    min_value=2.0, max_value=15.0, value=5.0, step=0.5,
+    disabled=not use_scale_out,
+    help="כאשר המניה מגיעה ליעד ה-RSI, נמכרים 50%. ה-50% הנותרים נמכרים רק אם המניה יורדת באחוז זה מהשיא שנרשם מאותו רגע."
 )
 
-# ב. Time-Based Stop
-use_time_stop = st.sidebar.checkbox("הפעל סטופ מבוסס זמן (Time Stop)", value=False)
+# תוספת 2: סטופ מבוסס זמן
+use_time_stop = st.sidebar.checkbox("2. יציאה מעסקה שלא פרצה לאחר מספר ימים (Time Stop)", value=True)
 max_holding_days = st.sidebar.number_input(
-    "מספר ימי מסחר מקסימלי להחזקה:",
-    min_value=5, max_value=60, value=15, step=1,
+    "מספר ימי מסחר מקסימלי ללא פריצה:",
+    min_value=3, max_value=40, value=12, step=1,
     disabled=not use_time_stop,
-    help="שחרור אוטומטי של פוזיציות שלא הגיעו ליעד תוך זמן זה כדי למנוע נעילת מזומן."
+    help="אם חלפו ימים אלו והמניה עדיין לא הגיעה ליעד ה-RSI הראשון – הפוזיציה תיסגר כדי לשחרר את המזומן."
 )
 
-# --- ניהול סיכונים Stop Loss רגיל ---
+# ניהול סיכונים Stop Loss הגנתי ראשוני
 st.sidebar.markdown("---")
-st.sidebar.subheader("🛑 סטופ לוס הגנתי בסיסי (Initial Stop)")
+st.sidebar.subheader("🛑 3. Stop Loss הגנתי (הגבלת הפסד מקסימלי)")
 use_sl = st.sidebar.checkbox("הפעל Stop Loss קשיח מהכניסה", value=True)
 sl_type = st.sidebar.radio("חישוב Stop Loss:", ["לפי אחוזים מפוזיציה (%)", "לפי סכום נקוב בדולרים ($)"], disabled=not use_sl)
 
@@ -89,9 +83,8 @@ else:
 
 # תזמון ביצוע
 st.sidebar.markdown("---")
-st.sidebar.subheader("⏱️ תזמון ביצוע פקודות")
 exec_timing = st.sidebar.radio(
-    "באיזה מחיר לבצע קנייה/מכירה?",
+    "תזמון ביצוע פקודות:",
     options=["מחיר פתיחה ביום שלמחרת (Next Day Open)", "מחיר נעילה באותו יום (Same Day Close)"],
     index=0
 )
@@ -115,11 +108,12 @@ def compute_rsi(series, period=14):
 active_tickers = [sym for sym, cap in STOCK_MARKET_CAPS.items() if cap >= min_cap]
 st.info(f"נמצאו **{len(active_tickers)}** חברות מעל סף שווי שוק של **${min_cap}B**")
 
+# --- הרצת הסימולציה ---
 if run_button:
     if not active_tickers:
         st.error("לא נמצאו מניות העונות על סף שווי השוק שנבחר.")
     else:
-        with st.spinner("מושך נתוני מחירים ומחשב אינדיקטורים..."):
+        with st.spinner("מושך נתוני מסחר ומחשב אינדיקטורים..."):
             max_lookback = int(sma_length * 2 + 60)
             data_start = start_date - timedelta(days=max_lookback)
             all_syms = list(set(active_tickers + ["^GSPC"]))
@@ -127,7 +121,7 @@ if run_button:
             data = yf.download(all_syms, start=data_start, end=end_date, progress=False)
 
             if data.empty or "Close" not in data or "Open" not in data:
-                st.error("שגיאה במשיכת נתוני מניות מ-Yahoo Finance.")
+                st.error("שגיאה במשיכת נתונים מ-Yahoo Finance.")
             else:
                 close_df = data["Close"]
                 open_df = data["Open"]
@@ -157,34 +151,41 @@ if run_button:
                 executed_buys = []
                 
                 pending_buys = []
-                pending_sells = []
+                pending_sells = []  # מבנה: {ticker, shares_to_sell, reason}
 
                 for day in trading_days:
-                    # 1. ביצוע פקודות ממתינות (Next Day Open)
+                    # 1. ביצוע פקודות שממתינות מהיום הקודם (Next Day Open)
                     if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
                         for sell in pending_sells:
                             sym = sell["ticker"]
                             if sym in open_positions and day in indicators[sym].index:
                                 pos = open_positions[sym]
                                 exit_px = indicators[sym].loc[day, "Open"]
-                                proceeds = pos["shares"] * exit_px
-                                cash += proceeds
-                                pnl_dollar = proceeds - pos["cost_basis"]
-                                pnl_pct = (exit_px / pos["entry_price"]) - 1.0
+                                shares_selling = sell["shares"]
+                                proceeds = shares_selling * exit_px
+                                cost_of_these_shares = shares_selling * pos["entry_price"]
                                 
+                                cash += proceeds
+                                pnl_dollar = proceeds - cost_of_these_shares
+                                pnl_pct = (exit_px / pos["entry_price"]) - 1.0
+
                                 closed_trades.append({
                                     "מניה": sym,
                                     "כניסה": pos["entry_date"].strftime("%Y-%m-%d"),
                                     "יציאה": day.strftime("%Y-%m-%d"),
                                     "מחיר קנייה": round(pos["entry_price"], 2),
                                     "מחיר מכירה": round(exit_px, 2),
+                                    "כמות שנמכרה": round(shares_selling, 2),
                                     "רווח/הפסד ($)": round(pnl_dollar, 2),
                                     "תשואה (%)": round(pnl_pct * 100, 2),
                                     "ימי החזקה": pos["days_held"],
                                     "סיבת יציאה": sell["reason"],
                                     "exit_date_raw": day
                                 })
-                                del open_positions[sym]
+                                
+                                pos["shares"] -= shares_selling
+                                if pos["shares"] <= 0.0001:
+                                    del open_positions[sym]
                         pending_sells = []
 
                         for buy in pending_buys:
@@ -201,8 +202,8 @@ if run_button:
                                         "cost_basis": alloc,
                                         "entry_date": day,
                                         "days_held": 0,
-                                        "max_price": entry_px,
-                                        "rsi_target_reached": False
+                                        "scaled_out": False,
+                                        "peak_after_scale": entry_px
                                     }
                                     executed_buys.append({
                                         "date": day,
@@ -211,93 +212,105 @@ if run_button:
                                     })
                         pending_buys = []
 
-                    # 2. עדכון פוזיציות ושערוך שווי התיק
+                    # 2. עדכון פוזיציות ושערוך שווי תיק
                     holdings_val = 0.0
                     for sym, pos in open_positions.items():
                         if day in indicators[sym].index:
                             cur_px = indicators[sym].loc[day, "Close"]
                             holdings_val += pos["shares"] * cur_px
                             pos["days_held"] += 1
-                            if cur_px > pos["max_price"]:
-                                pos["max_price"] = cur_px
+                            if pos["scaled_out"] and cur_px > pos["peak_after_scale"]:
+                                pos["peak_after_scale"] = cur_px
                         else:
-                            holdings_val += pos["cost_basis"]
+                            holdings_val += pos["shares"] * pos["entry_price"]
 
                     total_equity = cash + holdings_val
                     portfolio_history.append({"Date": day, "Equity": total_equity, "Cash": cash})
 
-                    # 3. בדיקת איתותי יציאה (RSI / Trailing Stop / Time Stop / Stop Loss)
-                    to_close_today = []
+                    # 3. בדיקת תנאי יציאה בסגירת יום המסחר
+                    sells_to_process = []  # רשימת מכירות לביצוע
                     for sym, pos in open_positions.items():
                         if day in indicators[sym].index:
                             row = indicators[sym].loc[day]
                             cur_px = row["Close"]
-                            cost = pos["cost_basis"]
                             cur_val = pos["shares"] * cur_px
+                            cost = pos["shares"] * pos["entry_price"]
                             pnl_dollar = cur_val - cost
                             pnl_pct = (cur_px / pos["entry_price"]) - 1.0
 
-                            reason = None
-
-                            # א. בדיקת Stop Loss בסיסי
+                            # א. בדיקת Stop Loss בסיסי (חל על כל הפוזיציה)
+                            hit_sl = False
                             if use_sl:
                                 if sl_pct_val is not None and pnl_pct <= -sl_pct_val:
-                                    reason = "Stop Loss 🛑"
+                                    hit_sl = True
                                 elif sl_usd_val is not None and pnl_dollar <= -sl_usd_val:
-                                    reason = "Stop Loss 🛑"
+                                    hit_sl = True
 
-                            # ב. בדיקת יעד RSI ו-Trailing Stop
-                            if not reason:
-                                if row["RSI"] >= rsi_exit:
-                                    pos["rsi_target_reached"] = True
-                                    if not use_trailing:
-                                        reason = "RSI Target 🎯"
-                                    elif trailing_mode == "מהיום הראשון של העסקה":
-                                        pass  # ינוהל לפי ה-Trailing למטה
-                                    # במצב "רק לאחר הגעה ליעד RSI" - הטרייד ממשיך לרכוב עם ה-Trailing Stop
+                            if hit_sl:
+                                sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "Stop Loss 🛑"})
+                                continue
 
-                            # ג. בדיקת Trailing Stop
-                            if not reason and use_trailing:
-                                drop_from_peak = (cur_px / pos["max_price"]) - 1.0
-                                trail_threshold = -(trailing_pct / 100.0)
-
-                                if trailing_mode == "מהיום הראשון של העסקה":
-                                    if drop_from_peak <= trail_threshold:
-                                        reason = "Trailing Stop 📈"
-                                elif trailing_mode == "רק לאחר הגעה ליעד RSI (מאפשר למנצחים לרוץ)":
-                                    if pos["rsi_target_reached"] and drop_from_peak <= trail_threshold:
-                                        reason = "Trailing Stop (Post-RSI) 📈"
-
-                            # ד. בדיקת סטופ מבוסס זמן (Time Stop)
-                            if not reason and use_time_stop:
+                            # ב. בדיקת סטופ מבוסס זמן (Time Stop) - אם טרם היה מימוש ראשון
+                            if use_time_stop and not pos["scaled_out"]:
                                 if pos["days_held"] >= max_holding_days:
-                                    reason = "Time Stop (תום ימי החזקה) ⏳"
+                                    sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "Time Stop (לא פרצה) ⏳"})
+                                    continue
 
-                            # ביצוע היציאה
-                            if reason:
-                                if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
-                                    if not any(s["ticker"] == sym for s in pending_sells):
-                                        pending_sells.append({"ticker": sym, "reason": reason})
+                            # ג. בדיקת יעד RSI ראשון (Scale-Out 50% או 100%)
+                            if row["RSI"] >= rsi_exit and not pos["scaled_out"]:
+                                if use_scale_out:
+                                    # מימוש חצי פוזיציה
+                                    half_shares = pos["shares"] * 0.5
+                                    pos["scaled_out"] = True
+                                    pos["peak_after_scale"] = cur_px
+                                    sells_to_process.append({"ticker": sym, "shares": half_shares, "reason": "מימוש 50% ביעד RSI 🎯"})
                                 else:
-                                    cash += cur_val
-                                    closed_trades.append({
-                                        "מניה": sym,
-                                        "כניסה": pos["entry_date"].strftime("%Y-%m-%d"),
-                                        "יציאה": day.strftime("%Y-%m-%d"),
-                                        "מחיר קנייה": round(pos["entry_price"], 2),
-                                        "מחיר מכירה": round(cur_px, 2),
-                                        "רווח/הפסד ($)": round(pnl_dollar, 2),
-                                        "תשואה (%)": round(pnl_pct * 100, 2),
-                                        "ימי החזקה": pos["days_held"],
-                                        "סיבת יציאה": reason,
-                                        "exit_date_raw": day
-                                    })
-                                    to_close_today.append(sym)
+                                    # מימוש מלא רגיל
+                                    sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "RSI Target 100% 🎯"})
+                                continue
 
-                    for sym in to_close_today:
-                        del open_positions[sym]
+                            # ד. בדיקת Trailing Stop ל-50% הנותרים (אם כבר מומש החצי הראשון)
+                            if pos["scaled_out"] and use_scale_out:
+                                drop_from_peak = (cur_px / pos["peak_after_scale"]) - 1.0
+                                if drop_from_peak <= -(trailing_pct / 100.0):
+                                    sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "Trailing Stop ל-50% הנותרים 📈"})
 
-                    # 4. בדיקת איתותי כניסה
+                    # ביצוע המכירות (בסגירה או הכנה למחרת)
+                    for s in sells_to_process:
+                        sym = s["ticker"]
+                        if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
+                            if not any(ps["ticker"] == sym and ps["reason"] == s["reason"] for ps in pending_sells):
+                                pending_sells.append(s)
+                        else:
+                            # ביצוע Same Day Close
+                            pos = open_positions[sym]
+                            cur_px = indicators[sym].loc[day, "Close"]
+                            shares_selling = s["shares"]
+                            proceeds = shares_selling * cur_px
+                            cost_of_these = shares_selling * pos["entry_price"]
+                            
+                            cash += proceeds
+                            pnl_d = proceeds - cost_of_these
+                            pnl_p = (cur_px / pos["entry_price"]) - 1.0
+                            
+                            closed_trades.append({
+                                "מניה": sym,
+                                "כניסה": pos["entry_date"].strftime("%Y-%m-%d"),
+                                "יציאה": day.strftime("%Y-%m-%d"),
+                                "מחיר קנייה": round(pos["entry_price"], 2),
+                                "מחיר מכירה": round(cur_px, 2),
+                                "כמות שנמכרה": round(shares_selling, 2),
+                                "רווח/הפסד ($)": round(pnl_d, 2),
+                                "תשואה (%)": round(pnl_p * 100, 2),
+                                "ימי החזקה": pos["days_held"],
+                                "סיבת יציאה": s["reason"],
+                                "exit_date_raw": day
+                            })
+                            pos["shares"] -= shares_selling
+                            if pos["shares"] <= 0.0001:
+                                del open_positions[sym]
+
+                    # 4. בדיקת איתותי כניסה חדשים (פנוי מזומן ממימושים)
                     for sym in active_tickers:
                         if sym in open_positions or any(b["ticker"] == sym for b in pending_buys) or sym not in indicators:
                             continue
@@ -321,8 +334,8 @@ if run_button:
                                             "cost_basis": alloc,
                                             "entry_date": day,
                                             "days_held": 0,
-                                            "max_price": px,
-                                            "rsi_target_reached": False
+                                            "scaled_out": False,
+                                            "peak_after_scale": px
                                         }
                                         executed_buys.append({
                                             "date": day,
@@ -330,7 +343,7 @@ if run_button:
                                             "price": px
                                         })
 
-                # חישוב תוצאות
+                # עיבוד תוצאות
                 df_equity = pd.DataFrame(portfolio_history).set_index("Date")
                 bm_start = benchmark_close.iloc[0]
                 df_equity["Benchmark"] = (benchmark_close / bm_start) * initial_capital
@@ -352,7 +365,7 @@ if run_button:
                 m3.metric("Alpha (עודף על המדד)", f"{(strat_ret - bm_ret):+.2f}%")
                 m4.metric("Max Drawdown", f"{max_dd:.2f}%")
 
-                # גרף עם עסקאות
+                # גרף
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Equity"], mode="lines", name="תיק האסטרטגיה", line=dict(color="#00BA38", width=2.5)))
                 fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Benchmark"], mode="lines", name="S&P 500", line=dict(color="#619CFF", dash="dot")))
@@ -361,38 +374,34 @@ if run_button:
                 if executed_buys:
                     buy_dates = [b["date"] for b in executed_buys if b["date"] in df_equity.index]
                     buy_equities = [df_equity.loc[b["date"], "Equity"] for b in executed_buys if b["date"] in df_equity.index]
-                    buy_texts = [f"קנייה: {b['ticker']}<br>מחיר: ${b['price']:.2f}" for b in executed_buys if b["date"] in df_equity.index]
-                    
                     fig.add_trace(go.Scatter(
                         x=buy_dates, y=buy_equities, mode="markers", name="קנייה (Buy)",
                         marker=dict(symbol="triangle-up", size=11, color="#2ECC71", line=dict(width=1, color="white")),
-                        hoverinfo="text", hovertext=buy_texts
+                        hoverinfo="text", hovertext=[f"קנייה: {b['ticker']}" for b in executed_buys if b["date"] in df_equity.index]
                     ))
 
-                # סמני מכירה לפי סוג
+                # סמני יציאות
                 if closed_trades:
-                    # RSI Target
-                    tp_trades = [t for t in closed_trades if "Target" in t["סיבת יציאה"] and t["exit_date_raw"] in df_equity.index]
-                    if tp_trades:
+                    # מימושים חלקיים
+                    scale_trades = [t for t in closed_trades if "50%" in t["סיבת יציאה"] and t["exit_date_raw"] in df_equity.index]
+                    if scale_trades:
                         fig.add_trace(go.Scatter(
-                            x=[t["exit_date_raw"] for t in tp_trades],
-                            y=[df_equity.loc[t["exit_date_raw"], "Equity"] for t in tp_trades],
-                            mode="markers", name="יציאה ביעד RSI 🎯",
-                            marker=dict(symbol="circle", size=10, color="#F1C40F", line=dict(width=1, color="white")),
-                            hoverinfo="text",
-                            hovertext=[f"RSI Target: {t['מניה']}<br>+{t['תשואה (%)']}% (${t['רווח/הפסד ($)']})" for t in tp_trades]
+                            x=[t["exit_date_raw"] for t in scale_trades],
+                            y=[df_equity.loc[t["exit_date_raw"], "Equity"] for t in scale_trades],
+                            mode="markers", name="מימוש 50% 🎯",
+                            marker=dict(symbol="circle", size=9, color="#F1C40F", line=dict(width=1, color="white")),
+                            hoverinfo="text", hovertext=[f"מימוש חצי: {t['מניה']} (+{t['תשואה (%)']}%)" for t in scale_trades]
                         ))
 
-                    # Trailing Stop
+                    # Trailing לחצי השני
                     trail_trades = [t for t in closed_trades if "Trailing" in t["סיבת יציאה"] and t["exit_date_raw"] in df_equity.index]
                     if trail_trades:
                         fig.add_trace(go.Scatter(
                             x=[t["exit_date_raw"] for t in trail_trades],
                             y=[df_equity.loc[t["exit_date_raw"], "Equity"] for t in trail_trades],
-                            mode="markers", name="יציאה ב-Trailing Stop 📈",
+                            mode="markers", name="Trailing ל-50% הנותרים 📈",
                             marker=dict(symbol="diamond", size=10, color="#9B59B6", line=dict(width=1, color="white")),
-                            hoverinfo="text",
-                            hovertext=[f"Trailing Stop: {t['מניה']}<br>תשואה: {t['תשואה (%)']}% (${t['רווח/הפסד ($)']})" for t in trail_trades]
+                            hoverinfo="text", hovertext=[f"סגירת חצי שני: {t['מניה']} (+{t['תשואה (%)']}%)" for t in trail_trades]
                         ))
 
                     # Time Stop
@@ -401,40 +410,26 @@ if run_button:
                         fig.add_trace(go.Scatter(
                             x=[t["exit_date_raw"] for t in time_trades],
                             y=[df_equity.loc[t["exit_date_raw"], "Equity"] for t in time_trades],
-                            mode="markers", name="יציאה ב-Time Stop ⏳",
+                            mode="markers", name="Time Stop (לא פרצה) ⏳",
                             marker=dict(symbol="square", size=9, color="#E67E22", line=dict(width=1, color="white")),
-                            hoverinfo="text",
-                            hovertext=[f"Time Stop: {t['מניה']}<br>תשואה: {t['תשואה (%)']}% (${t['רווח/הפסד ($)']})" for t in time_trades]
-                        ))
-
-                    # Stop Loss
-                    sl_trades = [t for t in closed_trades if "Stop Loss" in t["סיבת יציאה"] and t["exit_date_raw"] in df_equity.index]
-                    if sl_trades:
-                        fig.add_trace(go.Scatter(
-                            x=[t["exit_date_raw"] for t in sl_trades],
-                            y=[df_equity.loc[t["exit_date_raw"], "Equity"] for t in sl_trades],
-                            mode="markers", name="יציאה ב-Stop Loss 🛑",
-                            marker=dict(symbol="triangle-down", size=12, color="#E74C3C", line=dict(width=1, color="white")),
-                            hoverinfo="text",
-                            hovertext=[f"Stop Loss: {t['מניה']}<br>{t['תשואה (%)']}% (${t['רווח/הפסד ($)']})" for t in sl_trades]
+                            hoverinfo="text", hovertext=[f"סטופ זמן: {t['מניה']}" for t in time_trades]
                         ))
 
                 fig.update_layout(
-                    title=f"שווי תיק מול מדד S&P 500 ועסקאות שבוצעו ({exec_timing})",
+                    title=f"שווי תיק מול S&P 500 (מימוש חלקי + Trailing לחצי + Time Stop)",
                     template="plotly_dark",
                     hovermode="closest",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                with st.expander("📋 יומן עסקאות מפורט (כולל ימי החזקה וסיבות יציאה)", expanded=True):
+                # יומן עסקאות
+                with st.expander("📋 יומן עסקאות מפורט (כולל פירוט מימושים של 50%)", expanded=True):
                     if closed_trades:
                         clean_trades = [{k: v for k, v in t.items() if k != "exit_date_raw"} for t in closed_trades]
                         df_tr = pd.DataFrame(clean_trades)
                         wins = len(df_tr[df_tr["רווח/הפסד ($)"] > 0])
-                        avg_days = df_tr["ימי החזקה"].mean()
-                        
-                        st.write(f"**סה\"כ עסקאות:** {len(df_tr)} | **שיעור הצלחה:** {(wins / len(df_tr))*100:.1f}% | **זמן החזקה ממוצע:** {avg_days:.1f} ימים")
+                        st.write(f"**סה\"כ פעולות מכירה:** {len(df_tr)} | **שיעור פעולות ברווח:** {(wins / len(df_tr))*100:.1f}%")
                         st.dataframe(df_tr, use_container_width=True)
                     else:
-                        st.info("לא נסגרו עסקאות בתקופה שנבחרה לפי תנאי הסף שהוגדרו.")
+                        st.info("לא נסגרו עסקאות בתקופה זו.")
