@@ -5,12 +5,12 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="סימולטור מסחר חי", layout="wide")
+st.set_page_config(page_title="סימולטור מסחר מתקדם", layout="wide")
 
-st.title("📈 סימולטור מסחר חי: RSI + SMA + Stop Loss + RVOL")
-st.caption("סימולציה מבוססת שווי שוק, סינון מחזורי מסחר יחסיים (RVOL) והשוואה ל-S&P 500")
+st.title("📈 סימולטור מסחר מתקדם: RSI + SMA + הגנה מסכינים נופלות")
+st.caption("סימולציית Backtest מותאמת אישית, ניהול סיכונים כפול, 4 מסנני היפוך והשוואה למדד S&P 500")
 
-# מאגר מניות ושווי שוק משוער במיליארדים
+# מאגר מניות מגה-קאפ
 STOCK_MARKET_CAPS = {
     "MSFT": 3100, "AAPL": 3400, "NVDA": 3000, "GOOGL": 2000, "AMZN": 1950,
     "META": 1300, "BRK-B": 950, "LLY": 850, "AVGO": 800, "TSLA": 750,
@@ -22,7 +22,7 @@ STOCK_MARKET_CAPS = {
 }
 
 # --- סרגל צד: פרמטרים ---
-st.sidebar.header("⚙️ הגדרות אסטרטגיה")
+st.sidebar.header("⚙️ הגדרות אסטרטגיה בסיסיות")
 
 # 1. שווי שוק
 min_cap = st.sidebar.slider("1. שווי שוק מינימלי ($B)", min_value=150, max_value=500, value=200, step=25)
@@ -30,7 +30,7 @@ min_cap = st.sidebar.slider("1. שווי שוק מינימלי ($B)", min_value=
 # 2 + 3. RSI
 col_rsi1, col_rsi2 = st.sidebar.columns(2)
 with col_rsi1:
-    rsi_entry = st.sidebar.number_input("2. RSI כניסה (<)", min_value=15, max_value=45, value=40, step=1)
+    rsi_entry = st.sidebar.number_input("2. RSI כניסה", min_value=15, max_value=45, value=40, step=1)
 with col_rsi2:
     rsi_exit = st.sidebar.number_input("3. RSI יציאה (>=)", min_value=50, max_value=85, value=60, step=1)
 rsi_period = st.sidebar.slider("תקופת RSI (ימים)", min_value=7, max_value=28, value=14)
@@ -42,23 +42,55 @@ with col_c1:
 with col_c2:
     position_pct = st.sidebar.number_input("5. גודל עסקה (% מהתיק)", min_value=2.0, max_value=100.0, value=10.0, step=1.0) / 100.0
 
-# 6. ממוצע נע SMA
-use_sma = st.sidebar.checkbox("6. כניסה רק מעל SMA", value=True)
+# 6. ממוצע נע SMA בסיסי
+use_sma = st.sidebar.checkbox("6. כניסה רק כאשר המחיר מעל SMA", value=True)
 sma_length = st.sidebar.number_input("אורך SMA", min_value=20, max_value=300, value=200, step=10, disabled=not use_sma)
 
-# 7. סינון מחזור מסחר יחסי (RVOL) - חדש!
+# --- 4 שיפורים למניעת סכינים נופלות (חדש!) ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛡️ מניעת סכינים נופלות ושיפור דיוק")
+
+use_rsi_hook = st.sidebar.checkbox(
+    "1. חציית RSI כלפי מעלה (RSI Hook)",
+    value=True,
+    help="נכנס רק כשה-RSI חוצה חזרה כלפי מעלה את סף הכניסה (לא כשהוא עדיין צולל)."
+)
+
+use_green_candle = st.sidebar.checkbox(
+    "2. אישור נר ירוק (Close > Open)",
+    value=True,
+    help="כניסה רק ביום שבו מחיר הסגירה גבוה מהפתיחה (הקונים בשליטה בנר האיתות)."
+)
+
+use_sma_slope = st.sidebar.checkbox(
+    "3. שיפוע SMA חיובי (SMA בעלייה)",
+    value=False,
+    disabled=not use_sma,
+    help="ה-SMA עצמו חייב להיות גבוה יותר מערכו לפני מספר שבועות."
+)
+sma_slope_lookback = st.sidebar.number_input(
+    "בדיקת שיפוע SMA מול ימים לאחור:",
+    min_value=5, max_value=60, value=20, step=5,
+    disabled=not (use_sma and use_sma_slope)
+)
+
+use_max_dist_sma = st.sidebar.checkbox(
+    "4. הגבלת מרחק מקסימלי מעל ה-SMA (אזור תמיכה)",
+    value=False,
+    disabled=not use_sma,
+    help="כניסה רק אם המניה לא מתוחה מדי מעל הממוצע (בטווח תמיכה הגיוני)."
+)
+max_dist_pct = st.sidebar.slider(
+    "מרחק מרבי מעל ה-SMA (%):",
+    min_value=3.0, max_value=25.0, value=10.0, step=0.5,
+    disabled=not (use_sma and use_max_dist_sma)
+)
+
+# 7. סינון מחזורי מסחר RVOL
 st.sidebar.markdown("---")
 st.sidebar.subheader("📊 סינון מחזורי מסחר (RVOL)")
-use_rvol = st.sidebar.checkbox("סנן כניסה לפי RVOL של יום הקנייה", value=False)
-min_rvol = st.sidebar.slider(
-    "סף RVOL מינימלי לכניסה:",
-    min_value=0.5,
-    max_value=3.0,
-    value=1.0,
-    step=0.1,
-    disabled=not use_rvol,
-    help="1.0 = מחזור ממוצע, מעל 1.2 = מחזור ער/חריג."
-)
+use_rvol = st.sidebar.checkbox("סנן כניסה לפי RVOL", value=False)
+min_rvol = st.sidebar.slider("סף RVOL מינימלי:", min_value=0.5, max_value=3.0, value=1.0, step=0.1, disabled=not use_rvol)
 rvol_window = st.sidebar.number_input("תקופת ממוצע מחזורים (ימים)", min_value=5, max_value=60, value=20, step=5, disabled=not use_rvol)
 
 # תזמון ביצוע
@@ -84,6 +116,7 @@ else:
     sl_usd_val = st.sidebar.number_input("הפסד דולרי מקסימלי לעסקה ($):", min_value=10.0, max_value=2000.0, value=100.0, step=10.0, disabled=not use_sl)
     sl_pct_val = None
 
+# תקופת הרצה
 st.sidebar.markdown("---")
 today = datetime.today().date()
 one_year_ago = today - timedelta(days=365)
@@ -106,9 +139,9 @@ if run_button:
     if not active_tickers:
         st.error("לא נמצאו מניות העונות על סף שווי השוק שנבחר.")
     else:
-        with st.spinner("מושך נתוני מחירים ומחזורי מסחר (Volume) מ-Yahoo Finance..."):
-            lookback_days = int(max(sma_length, rvol_window) * 2 + 60)
-            data_start = start_date - timedelta(days=lookback_days)
+        with st.spinner("מושך נתוני מחירים ומחשב אינדיקטורים..."):
+            max_lookback = int(max(sma_length + sma_slope_lookback, rvol_window) * 2 + 60)
+            data_start = start_date - timedelta(days=max_lookback)
             all_syms = list(set(active_tickers + ["^GSPC"]))
             
             data = yf.download(all_syms, start=data_start, end=end_date, progress=False)
@@ -127,11 +160,11 @@ if run_button:
                         o_series = open_df[sym].dropna()
                         v_series = vol_df[sym].dropna()
                         
-                        if len(c_series) > max(sma_length, rvol_window):
+                        if len(c_series) > (sma_length + sma_slope_lookback):
                             rsi = compute_rsi(c_series, rsi_period)
                             sma = c_series.rolling(window=sma_length).mean()
+                            sma_slope = sma - sma.shift(sma_slope_lookback)
                             
-                            # חישוב RVOL
                             vol_avg = v_series.rolling(window=rvol_window).mean()
                             rvol = v_series / vol_avg
                             
@@ -141,7 +174,9 @@ if run_button:
                                 "Volume": v_series,
                                 "RVOL": rvol,
                                 "RSI": rsi,
-                                "SMA": sma
+                                "RSI_prev": rsi.shift(1),
+                                "SMA": sma,
+                                "SMA_slope": sma_slope
                             }).dropna()
 
                 benchmark_close = close_df["^GSPC"].loc[str(start_date):str(end_date)].dropna()
@@ -183,17 +218,14 @@ if run_button:
                                 del open_positions[sym]
                         pending_sells = []
 
-                        # ביצוע קניות ממתינות (כולל בדיקת RVOL של יום הקנייה)
                         for buy in pending_buys:
                             sym = buy["ticker"]
                             if sym not in open_positions and day in indicators[sym].index:
                                 row_buy = indicators[sym].loc[day]
                                 
-                                # בדיקת RVOL ביום הקנייה אם נבחר
                                 pass_rvol = True
                                 if use_rvol:
-                                    day_rvol = row_buy.get("RVOL", 1.0)
-                                    if day_rvol < min_rvol:
+                                    if row_buy.get("RVOL", 1.0) < min_rvol:
                                         pass_rvol = False
                                 
                                 if pass_rvol:
@@ -226,7 +258,7 @@ if run_button:
                     total_equity = cash + holdings_val
                     portfolio_history.append({"Date": day, "Equity": total_equity, "Cash": cash})
 
-                    # 3. בדיקת איתותי יציאה
+                    # 3. בדיקת איתותי יציאה בסגירה
                     to_close_today = []
                     for sym, pos in open_positions.items():
                         if day in indicators[sym].index:
@@ -269,21 +301,41 @@ if run_button:
                     for sym in to_close_today:
                         del open_positions[sym]
 
-                    # 4. בדיקת איתותי כניסה
+                    # 4. בדיקת איתותי כניסה (כולל 4 השיפורים החדשים)
                     for sym in active_tickers:
                         if sym in open_positions or any(b["ticker"] == sym for b in pending_buys) or sym not in indicators:
                             continue
                         if day in indicators[sym].index:
                             row = indicators[sym].loc[day]
-                            c_rsi = row["RSI"] < rsi_entry
-                            c_sma = (row["Close"] > row["SMA"]) if use_sma else True
+                            
+                            # תנאי 1: RSI (רגיל או Hook)
+                            if use_rsi_hook:
+                                rsi_entry_cond = (row["RSI_prev"] < rsi_entry) and (row["RSI"] >= rsi_entry)
+                            else:
+                                rsi_entry_cond = row["RSI"] < rsi_entry
 
-                            if c_rsi and c_sma:
+                            # תנאי 2: נר ירוק (Close > Open)
+                            green_cond = (row["Close"] > row["Open"]) if use_green_candle else True
+
+                            # תנאי 3: מעל SMA
+                            sma_cond = (row["Close"] > row["SMA"]) if use_sma else True
+
+                            # תנאי 4: שיפוע SMA חיובי
+                            slope_cond = (row["SMA_slope"] > 0) if (use_sma and use_sma_slope) else True
+
+                            # תנאי 5: מרחק מקסימלי מעל SMA (אינו מתוח מדי)
+                            if use_sma and use_max_dist_sma:
+                                pct_above_sma = ((row["Close"] / row["SMA"]) - 1.0) * 100
+                                dist_cond = (pct_above_sma <= max_dist_pct)
+                            else:
+                                dist_cond = True
+
+                            # בדיקת סיכום תנאי כניסה
+                            if rsi_entry_cond and green_cond and sma_cond and slope_cond and dist_cond:
                                 alloc = total_equity * position_pct
                                 if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
                                     pending_buys.append({"ticker": sym, "allocation": alloc})
                                 else:
-                                    # בדיקת RVOL עבור Same Day Close
                                     pass_rvol = True
                                     if use_rvol:
                                         if row.get("RVOL", 1.0) < min_rvol:
