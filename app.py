@@ -196,12 +196,10 @@ if run_button:
                 open_df = data["Open"]
                 vol_df = data["Volume"]
                 
-                # חישוב נתוני מדד SPY
                 spy_series = close_df["SPY"].dropna()
                 spy_sma200 = spy_series.rolling(window=200).mean()
                 spy_filter_series = spy_series > spy_sma200
 
-                # חישוב אינדיקטורים מלא לכל מניה
                 indicators = {}
                 for sym in active_tickers:
                     if sym in close_df.columns and sym in open_df.columns and sym in vol_df.columns:
@@ -281,9 +279,7 @@ if run_button:
                             if sym not in open_positions and day in indicators[sym].index:
                                 row_buy = indicators[sym].loc[day]
                                 entry_px = row_buy["Open"]
-                                
-                                # חילוץ שער הסגירה מאתמול בצורה מוגנת
-                                signal_close_px = buy.get("signal_close_price", entry_px)
+                                signal_close_px = buy["signal_close_price"]
                                 
                                 # בדיקת RVOL
                                 pass_rvol = True
@@ -296,7 +292,7 @@ if run_button:
                                 if use_max_gap and signal_close_px > 0:
                                     gap_pct = ((entry_px / signal_close_px) - 1.0) * 100.0
                                     if gap_pct > max_gap_pct:
-                                        pass_gap = False  # פער גדול מדי מעל הסגירה
+                                        pass_gap = False  # פער גדול מדי - מבוטל
                                 
                                 if pass_rvol and pass_gap:
                                     alloc = buy["allocation"]
@@ -405,4 +401,8 @@ if run_button:
                                 "תשואה (%)": round(pnl_p * 100, 2),
                                 "ימי החזקה": pos["days_held"],
                                 "סיבת יציאה": s["reason"],
-                             
+                                "exit_date_raw": day
+                            })
+                            pos["shares"] -= shares_selling
+                            if pos["shares"] <= 0.0001:
+                                del 
