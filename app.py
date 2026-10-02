@@ -196,10 +196,12 @@ if run_button:
                 open_df = data["Open"]
                 vol_df = data["Volume"]
                 
+                # חישוב נתוני מדד SPY
                 spy_series = close_df["SPY"].dropna()
                 spy_sma200 = spy_series.rolling(window=200).mean()
                 spy_filter_series = spy_series > spy_sma200
 
+                # חישוב אינדיקטורים מלא לכל מניה
                 indicators = {}
                 for sym in active_tickers:
                     if sym in close_df.columns and sym in open_df.columns and sym in vol_df.columns:
@@ -241,6 +243,169 @@ if run_button:
                 for day in trading_days:
                     # 1. ביצוע פקודות שממתינות מהיום הקודם (Next Day Open)
                     if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
+                        for sell in pending_sells:
+                            sym = sell["ticker"]
+                            if sym in open_positions and day in indicators[sym].index:
+                                pos = open_positions[sym]
+                                exit_px = indicators[sym].loc[day, "Open"]
+                                shares_selling = sell["shares"]
+                                proceeds = shares_selling * exit_px
+                                cost_of_these_shares = shares_selling * pos["entry_price"]
+                                
+                                cash += proceeds
+                                pnl_dollar = proceeds - cost_of_these_shares
+                                pnl_pct = (exit_px / pos["entry_price"]) - 1.0
+
+                                closed_trades.append({
+                                    "מניה": sym,
+                                    "כניסה": pos["entry_date"].strftime("%Y-%m-%d"),
+                                    "יציאה": day.strftime("%Y-%m-%d"),
+                                    "מחיר קנייה": round(pos["entry_price"], 2),
+                                    "מחיר מכירה": round(exit_px, 2),
+                                    "כמות שנמכרה": round(shares_selling, 2),
+                                    "רווח/הפסד ($)": round(pnl_dollar, 2),
+                                    "תשואה (%)": round(pnl_pct * 100, 2),
+                                    "ימי החזקה": pos["days_held"],
+                                    "סיבת יציאה": sell["reason"],
+                                    "exit_date_raw": day
+                                })
+                                
+                                pos["shares"] -= shares_selling
+                                if pos["shares"] <= 0.0001:
+                                    del open_positions[sym]
+                        pending_sells = []
+
+                        # ביצוע קניות ממתינות (כולל סינון RVOL והגנת Max Gap-Up)
+                        for buy in pending_buys:
+                            sym = buy["ticker"]
+                            if sym not in open_positions and day in indicators[sym].index:
+                                row_buy = indicators[sym].loc[day]
+                                entry_px = row_buy["Open"]
+                                
+                                # חילוץ בטוח של שער הסגירה מאתמול
+                                signal_close_px = buy.get("signal_close_price", entry_px)
+                                
+                                # בדיקת RVOL
+                                pass_rvol = True
+                                if use_rvol:
+                                    if row_buy.get("RVOL", 1.0) < min_rvol:
+                                        pass_rvol = False
+                                
+                                # בדיקת הגנת פער פתיחה מקסימלי (Max Gap-Up)
+                                pass_gap = True
+                                if use_max_gap and signal_close_px > 0:
+                                    gap_pct = ((entry_px / signal_close_px) - 1.0) * 100.0
+                                    if gap_pct > max_gap_pct:
+                                        pass_gap = False  # פער גדול מדי - מבוטל
+                                
+                                if pass_rvol and pass_gap:
+                                    alloc = buy["allocation"]
+                                    if cash >= alloc and alloc > 0 and entry_px > 0:
+                                        shares = alloc / entry_px
+                                        cash -= alloc
+                                        open_positions[sym] = {
+                                            "shares": shares,
+                                            "entry_price": entry_px,
+                                            "cost_basis": alloc,
+                                            "entry_date": day,
+                                            "days_held": 0,
+                                            "scaled_out": False,
+                                            "peak_after_scale": entry_px
+                                        }
+                                        executed_buys.append({
+                                            "date": day,
+                                            "ticker": sym,
+                                            "price": entry_px
+                                        })
+                        pending_buys = []
+
+                    # 2. עדכון פוזיציות ושערוך שווי תיק
+                    holdings_val = 0.0
+                    for sym, pos in open_positions.items():
+                        if day in indicators[sym].index:
+                            cur_px = indicators[sym].loc[day, "Close"]
+                            holdings_val += pos["shares"] * cur_px
+                            pos["days_held"] += 1
+                            if pos["scaled_out"] and cur_px > pos["peak_after_scale"]:
+                                pos["peak_after_scale"] = cur_px
+                        else:
+                            holdings_val += pos["shares"] * pos["entry_price"]
+
+                    total_equity = cash + holdings_val
+                    portfolio_history.append({"Date": day, "Equity": total_equity, "Cash": cash})
+
+                    # 3. בדיקת תנאי יציאה בסגירת יום המסחר
+                    sells_to_process = []
+                    for sym, pos in open_positions.items():
+                        if day in indicators[sym].index:
+                            row = indicators[sym].loc[day]
+                            cur_px = row["Close"]
+                            cost = pos["shares"] * pos["entry_price"]
+                            cur_val = pos["shares"] * cur_px
+                            pnl_dollar = cur_val - cost
+                            pnl_pct = (cur_px / pos["entry_price"]) - 1.0
+
+                            hit_sl = False
+                            if use_sl:
+                                if sl_pct_val is not None and pnl_pct <= -sl_pct_val:
+                                    hit_sl = True
+                                elif sl_usd_val is not None and pnl_dollar <= -sl_usd_val:
+                                    hit_sl = True
+
+                            if hit_sl:
+                                sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "Stop Loss 🛑"})
+                                continue
+
+                            if use_time_stop and not pos["scaled_out"]:
+                                if pos["days_held"] >= max_holding_days:
+                                    sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "Time Stop (לא פרצה) ⏳"})
+                                    continue
+
+                            if row["RSI"] >= rsi_exit and not pos["scaled_out"]:
+                                if use_scale_out:
+                                    half_shares = pos["shares"] * 0.5
+                                    pos["scaled_out"] = True
+                                    pos["peak_after_scale"] = cur_px
+                                    sells_to_process.append({"ticker": sym, "shares": half_shares, "reason": "מימוש 50% ביעד RSI 🎯"})
+                                else:
+                                    sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": "RSI Target 100% 🎯"})
+                                continue
+
+                            if pos["scaled_out"] and use_scale_out:
+                                trailing_stop_price = pos["peak_after_scale"] * (1.0 - (trailing_pct / 100.0))
+                                effective_stop_price = max(trailing_stop_price, pos["entry_price"]) if lock_breakeven else trailing_stop_price
+
+                                if cur_px <= effective_stop_price:
+                                    reason_label = "Trailing Stop (נעול באיזון) 🔒" if (cur_px <= pos["entry_price"] and lock_breakeven) else f"Trailing Stop {trailing_pct}% 📈"
+                                    sells_to_process.append({"ticker": sym, "shares": pos["shares"], "reason": reason_label})
+
+                    for s in sells_to_process:
+                        sym = s["ticker"]
+                        if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
+                            if not any(ps["ticker"] == sym and ps["reason"] == s["reason"] for ps in pending_sells):
+                                pending_sells.append(s)
+                        else:
+                            pos = open_positions[sym]
+                            cur_px = indicators[sym].loc[day, "Close"]
+                            shares_selling = s["shares"]
+                            proceeds = shares_selling * cur_px
+                            cost_of_these = shares_selling * pos["entry_price"]
+                            cash += proceeds
+                            pnl_d = proceeds - cost_of_these
+                            pnl_p = (cur_px / pos["entry_price"]) - 1.0
+                            
+                            closed_trades.append({
+                                "מניה": sym,
+                                "כניסה": pos["entry_date"].strftime("%Y-%m-%d"),
+                                "יציאה": day.strftime("%Y-%m-%d"),
+                                "מחיר קנייה": round(pos["entry_price"], 2),
+                                "מחיר מכירה": round(cur_px, 2),
+                                "כמות שנמכרה": round(shares_selling, 2),
+                                "רווח/הפסד ($)": round(pnl_d, 2),
+                                "תשואה (%)": round(pnl_p * 100, 2),
+                                "ימי החזקה": pos["days_held"],
+                                "סיבת יציאה": s["reason"],
+                                "exi                  if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
                         for sell in pending_sells:
                             sym = sell["ticker"]
                             if sym in open_positions and day in indicators[sym].index:
