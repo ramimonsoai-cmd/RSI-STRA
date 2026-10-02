@@ -8,17 +8,34 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="סימולטור מסחר כמותי מוסדי מלא", layout="wide")
 
 st.title("📈 סימולטור מסחר כמותי: ניתוח מוסדי + הגנת Gap-Up")
-st.caption("ניתוח תיק מקיף: מדדי איכות, סינון שוק SPY, מניעת סכינים נופלות, RVOL, הגנת פערים וניהול מימושים")
+st.caption("ניתוח תיק מקיף: מאגר מורחב של חברות Mega-Cap (מעל $200B), מדדי איכות, סינון SPY ומניעת סכינים")
 
-# מאגר מניות מגה-קאפ
+# מאגר מניות מגה-קאפ מורחב ומעודכן (מעל 60 חברות מובילות בארה"ב)
 STOCK_MARKET_CAPS = {
-    "MSFT": 3100, "AAPL": 3400, "NVDA": 3000, "GOOGL": 2000, "AMZN": 1950,
-    "META": 1300, "BRK-B": 950, "LLY": 850, "AVGO": 800, "TSLA": 750,
-    "JPM": 600, "WMT": 550, "UNH": 530, "V": 520, "XOM": 470, "MA": 430,
-    "PG": 380, "COST": 370, "HD": 360, "JNJ": 380, "ORCL": 380, "BAC": 310,
-    "ABBV": 310, "NFLX": 290, "MRK": 280, "KO": 270, "CVX": 270, "AMD": 240,
-    "PEP": 230, "LIN": 220, "ADBE": 220, "TMO": 220, "MCD": 210, "CSCO": 200,
-    "WFC": 190, "DIS": 180, "GE": 180, "INTU": 180, "CAT": 170, "IBM": 170
+    # חברות טריליון וביג-טק
+    "NVDA": 3500, "AAPL": 3400, "MSFT": 3100, "AMZN": 2000, "GOOGL": 2000,
+    "META": 1450, "TSLA": 850, "BRK-B": 980, "AVGO": 850, "LLY": 820,
+    
+    # פיננסים ובנקים
+    "JPM": 650, "V": 540, "MA": 460, "BAC": 340, "WFC": 240, 
+    "MS": 220, "GS": 210, "AXP": 220, "BLK": 210,
+    
+    # צריכה, קמעונאות ותקשורת
+    "WMT": 680, "COST": 410, "PG": 380, "HD": 380, "KO": 280, 
+    "PEP": 230, "MCD": 210, "NFLX": 350, "DIS": 210, "PM": 230,
+    
+    # תוכנה ושבבים מתקדמים
+    "ORCL": 420, "CRM": 290, "NOW": 210, "ADBE": 220, "INTU": 200, 
+    "CSCO": 230, "QCOM": 220, "AMD": 240, "TXN": 210, "AMAT": 200, 
+    "MU": 210, "PLTR": 210, "PANW": 200, "LRCX": 200,
+    
+    # בריאות ותרופות
+    "UNH": 530, "JNJ": 380, "ABBV": 350, "MRK": 280, "TMO": 230, 
+    "ABT": 220, "DHR": 200, "ISRG": 210, "PFE": 180, "BMY": 150,
+    
+    # אנרגיה ותעשייה
+    "XOM": 480, "CVX": 280, "COP": 180, "GE": 230, "CAT": 230, 
+    "RTX": 200, "HON": 180, "LIN": 220, "UNP": 170, "BA": 150, "IBM": 210
 }
 
 # --- סרגל צד: הגדרות ---
@@ -173,8 +190,9 @@ def compute_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+# סינון החברות הפעילות לפי סף שווי השוק
 active_tickers = [sym for sym, cap in STOCK_MARKET_CAPS.items() if cap >= min_cap]
-st.info(f"נמצאו **{len(active_tickers)}** חברות מעל סף שווי שוק של **${min_cap}B**")
+st.info(f"נמצאו **{len(active_tickers)}** חברות מעל סף שווי שוק של **${min_cap}B** (מתוך מאגר של {len(STOCK_MARKET_CAPS)} חברות)")
 
 # --- הרצת הסימולציה ---
 if run_button:
@@ -196,10 +214,12 @@ if run_button:
                 open_df = data["Open"]
                 vol_df = data["Volume"]
                 
+                # נתוני מדד SPY
                 spy_series = close_df["SPY"].dropna()
                 spy_sma200 = spy_series.rolling(window=200).mean()
                 spy_filter_series = spy_series > spy_sma200
 
+                # חישוב אינדיקטורים לכל מניה
                 indicators = {}
                 for sym in active_tickers:
                     if sym in close_df.columns and sym in open_df.columns and sym in vol_df.columns:
@@ -279,7 +299,9 @@ if run_button:
                             if sym not in open_positions and day in indicators[sym].index:
                                 row_buy = indicators[sym].loc[day]
                                 entry_px = row_buy["Open"]
-                                signal_close_px = buy["signal_close_price"]
+                                
+                                # חילוץ שער הסגירה מאתמול בצורה מוגנת
+                                signal_close_px = buy.get("signal_close_price", entry_px)
                                 
                                 # בדיקת RVOL
                                 pass_rvol = True
@@ -292,7 +314,7 @@ if run_button:
                                 if use_max_gap and signal_close_px > 0:
                                     gap_pct = ((entry_px / signal_close_px) - 1.0) * 100.0
                                     if gap_pct > max_gap_pct:
-                                        pass_gap = False  # פער גדול מדי - מבוטל
+                                        pass_gap = False  # פער גדול מדי מעל הסגירה
                                 
                                 if pass_rvol and pass_gap:
                                     alloc = buy["allocation"]
@@ -445,7 +467,7 @@ if run_button:
                                         pending_buys.append({
                                             "ticker": sym,
                                             "allocation": alloc,
-                                            "signal_close_price": row["Close"]
+                                            "signal_close_price": float(row["Close"])
                                         })
                                     else:
                                         if cash >= alloc and alloc > 0:
