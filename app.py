@@ -4,13 +4,18 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import io
 
 st.set_page_config(page_title="סימולטור מסחר כמותי מוסדי מלא", layout="wide")
 
-st.title("📈 סימולטור מסחר כמותי: ניתוח מוסדי + הגנת Gap-Up")
-st.caption("ניתוח תיק מקיף: מאגר מורחב של חברות Mega-Cap (מעל $200B), מדדי איכות, סינון SPY ומניעת סכינים")
+# אתחול זיכרון הדפדפן/הסשן לשמירת הסימולציות
+if "saved_simulations" not in st.session_state:
+    st.session_state.saved_simulations = []
 
-# מאגר מניות מגה-קאפ מורחב ומעודכן (מעל 60 חברות מובילות בארה"ב)
+st.title("📈 סימולטור מסחר כמותי: ניתוח מוסדי + יומן סימולציות Excel")
+st.caption("ניתוח תיק מקיף, בדיקת אסטרטגיות, צבירת סימולציות והורדת יומן מחקר מלא לאקסל")
+
+# מאגר מניות מגה-קאפ מורחב ומעודכן
 STOCK_MARKET_CAPS = {
     # חברות טריליון וביג-טק
     "NVDA": 3500, "AAPL": 3400, "MSFT": 3100, "AMZN": 2000, "GOOGL": 2000,
@@ -74,7 +79,7 @@ max_gap_pct = st.sidebar.slider(
     help="אם שער הפתיחה גבוה ביותר מאחוז זה משער הסגירה של אתמול - הפקודה תבוטל."
 )
 
-# --- 2. מסנני מניעת סכינים נופלות (לבחירה נפרדת) ---
+# --- 2. מסנני מניעת סכינים נופלות ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛡️ 2. מסנני היפוך ומניעת סכינים נופלות")
 
@@ -190,7 +195,6 @@ def compute_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# סינון החברות הפעילות לפי סף שווי השוק
 active_tickers = [sym for sym, cap in STOCK_MARKET_CAPS.items() if cap >= min_cap]
 st.info(f"נמצאו **{len(active_tickers)}** חברות מעל סף שווי שוק של **${min_cap}B** (מתוך מאגר של {len(STOCK_MARKET_CAPS)} חברות)")
 
@@ -300,21 +304,18 @@ if run_button:
                                 row_buy = indicators[sym].loc[day]
                                 entry_px = row_buy["Open"]
                                 
-                                # חילוץ שער הסגירה מאתמול בצורה מוגנת
                                 signal_close_px = buy.get("signal_close_price", entry_px)
                                 
-                                # בדיקת RVOL
                                 pass_rvol = True
                                 if use_rvol:
                                     if row_buy.get("RVOL", 1.0) < min_rvol:
                                         pass_rvol = False
                                 
-                                # בדיקת הגנת פער פתיחה מקסימלי (Max Gap-Up)
                                 pass_gap = True
                                 if use_max_gap and signal_close_px > 0:
                                     gap_pct = ((entry_px / signal_close_px) - 1.0) * 100.0
                                     if gap_pct > max_gap_pct:
-                                        pass_gap = False  # פער גדול מדי מעל הסגירה
+                                        pass_gap = False
                                 
                                 if pass_rvol and pass_gap:
                                     alloc = buy["allocation"]
@@ -537,6 +538,51 @@ if run_button:
                 else:
                     win_rate, profit_factor, payoff_ratio, avg_win, avg_loss, avg_hold_days = 0, 0, 0, 0, 0, 0
 
+                # שמירת תוצאות הסימולציה האחרונה ב-session_state עבור לחצן השמירה
+                alpha_val = strat_ret - bm_ret
+                st.session_state["last_sim_data"] = {
+                    "זמן הרצה": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    # פרמטרי קלט בסיסיים
+                    "תאריך התחלה": str(start_date),
+                    "תאריך סיום": str(end_date),
+                    "שווי שוק מינימלי ($B)": min_cap,
+                    "הון התחלתי ($)": initial_capital,
+                    "אחוז פוזיציה (%)": position_pct * 100.0,
+                    "RSI כניסה": rsi_entry,
+                    "RSI יעד יציאה": rsi_exit,
+                    "תקופת RSI (ימים)": rsi_period,
+                    "תזמון ביצוע": exec_timing,
+                    # מדדים ומסננים לבחירה וכוונונם
+                    "סינון שוק SPY > SMA 200": "מופעל" if use_spy_filter else "כבוי",
+                    "סינון SMA מניה": f"מופעל (אורך {sma_length})" if use_sma else "כבוי",
+                    "מימוש 50% ביעד RSI": "מופעל" if use_scale_out else "כבוי",
+                    "מרחק Trailing Stop (%)": trailing_pct if use_scale_out else "ללא",
+                    "נעילת רצפת Breakeven": "מופעל" if (use_scale_out and lock_breakeven) else "כבוי",
+                    "סטופ זמן (Time Stop)": f"מופעל ({max_holding_days} ימים)" if use_time_stop else "כבוי",
+                    "Stop Loss ראשוני": f"{sl_pct_val*100:.1f}%" if (use_sl and sl_type == "לפי אחוזים מפוזיציה (%)") else (f"${sl_usd_val}" if use_sl else "כבוי"),
+                    "הגבלת פער פתיחה (Max Gap-Up)": f"מופעל ({max_gap_pct}%)" if use_max_gap else "כבוי",
+                    "RSI Hook": "מופעל" if use_rsi_hook else "כבוי",
+                    "אישור נר ירוק": "מופעל" if use_green_candle else "כבוי",
+                    "שיפוע SMA חיובי": f"מופעל (מול {sma_slope_lookback} ימים)" if (use_sma and use_sma_slope) else "כבוי",
+                    "הגבלת מרחק מעל SMA": f"מופעל (עד {max_dist_pct}%)" if (use_sma and use_max_dist_sma) else "כבוי",
+                    "סינון מחזור יחסי (RVOL)": f"מופעל (סף {min_rvol}, ממוצע {rvol_window} ימים)" if use_rvol else "כבוי",
+                    # תוצאות ואחוזי תשואה
+                    "שווי תיק סופי ($)": round(strat_final, 2),
+                    "תשואת אסטרטגיה (%)": round(strat_ret, 2),
+                    "תשואת S&P 500 (%)": round(bm_ret, 2),
+                    "אלפא מול המדד (%)": round(alpha_val, 2),
+                    "נסיגה מקסימלית MaxDD (%)": round(max_dd, 2),
+                    # מדדי איכות מספריים
+                    "Win Rate (%)": round(win_rate, 2),
+                    "Profit Factor (PF)": round(profit_factor, 2),
+                    "Sharpe Ratio": round(sharpe_ratio, 2),
+                    "Sortino Ratio": round(sortino_ratio, 2),
+                    "Calmar Ratio": round(calmar_ratio, 2),
+                    "Payoff Ratio": round(payoff_ratio, 2),
+                    "זמן החזקה ממוצע (ימים)": round(avg_hold_days, 1),
+                    "סה\"כ פעולות סגירה": len(df_trades)
+                }
+
                 # --- 1. הצגת KPIs מרכזיים עליונים ---
                 st.markdown("---")
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
@@ -632,3 +678,42 @@ if run_button:
                         st.dataframe(df_tr, use_container_width=True)
                     else:
                         st.info("לא נסגרו עסקאות בתקופה זו.")
+
+# --- 5. אזור ייעודי: צבירה, ניהול והורדת יומן סימולציות Excel ---
+st.markdown("---")
+st.subheader("📁 יומן שמירת סימולציות והורדה לאקסל (Excel)")
+
+col_save, col_clear = st.columns([2, 1])
+
+with col_save:
+    if "last_sim_data" in st.session_state:
+        if st.button("💾 הוסף סימולציה נוכחית ליומן", type="primary"):
+            st.session_state.saved_simulations.append(st.session_state["last_sim_data"].copy())
+            st.success("הסימולציה נשמרה בהצלחה כשורה חדשה ביומן!")
+    else:
+        st.caption("הפעל סימולציה כדי שתוכל להוסיף את תוצאותיה ליומן.")
+
+with col_clear:
+    if st.session_state.saved_simulations:
+        if st.button("🗑️ נקה יומן סימולציות"):
+            st.session_state.saved_simulations = []
+            st.rerun()
+
+if st.session_state.saved_simulations:
+    df_saved = pd.DataFrame(st.session_state.saved_simulations)
+    
+    st.write(f"**סה\"כ סימולציות שנצברו ביומן:** {len(df_saved)}")
+    st.dataframe(df_saved, use_container_width=True)
+
+    # יצירת קובץ Excel בינארי להורדה בזיכרון (מתאים גם למובייל)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_saved.to_excel(writer, index=False, sheet_name="Simulations_Log")
+    excel_data = output.getvalue()
+
+    st.download_button(
+        label="📥 הורד יומן סימולציות (Excel)",
+        data=excel_data,
+        file_name=f"simulations_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
