@@ -79,6 +79,19 @@ max_gap_pct = st.sidebar.slider(
     help="אם שער הפתיחה גבוה ביותר מאחוז זה משער הסגירה של אתמול - הפקודה תבוטל."
 )
 
+# הגנת תאריכי דוחות כספיים (Earnings Blackout Filter)
+use_earnings_filter = st.sidebar.checkbox(
+    "📅 סינון ימי דוחות כספיים (Earnings Filter)",
+    value=False,
+    help="מונע כניסה לעסקה אם לחברה יש פרסום דוחות כספיים במספר הימים הקרובים מיום האיתות."
+)
+earnings_days_buffer = st.sidebar.number_input(
+    "חלון ימים לבדיקת דוח מיום האיתות קדימה:",
+    min_value=1, max_value=20, value=5, step=1,
+    disabled=not use_earnings_filter,
+    help="אם קיים יום דוחות בטווח שבין יום האיתות למספר ימים זה - לא תתבצע כניסה לעסקה."
+)
+
 # --- 2. מסנני מניעת סכינים נופלות ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛡️ 2. מסנני היפוך ומניעת סכינים נופלות")
@@ -222,6 +235,21 @@ if run_button:
                 spy_series = close_df["SPY"].dropna()
                 spy_sma200 = spy_series.rolling(window=200).mean()
                 spy_filter_series = spy_series > spy_sma200
+
+                # שליפת תאריכי דוחות מראש אם הסינון מופעל
+                earnings_dates_map = {}
+                if use_earnings_filter:
+                    with st.spinner("אוסף תאריכי דוחות כספיים למניות הפעילות..."):
+                        for sym in active_tickers:
+                            try:
+                                t_obj = yf.Ticker(sym)
+                                ed = t_obj.get_earnings_dates(limit=24)
+                                if ed is not None and not ed.empty:
+                                    earnings_dates_map[sym] = set(ed.index.tz_localize(None).date)
+                                else:
+                                    earnings_dates_map[sym] = set()
+                            except Exception:
+                                earnings_dates_map[sym] = set()
 
                 # חישוב אינדיקטורים לכל מניה
                 indicators = {}
@@ -462,7 +490,17 @@ if run_button:
                                     if row.get("RVOL", 1.0) < min_rvol:
                                         rvol_cond = False
 
-                                if rsi_cond and green_cond and sma_cond and slope_cond and dist_cond and rvol_cond:
+                                # בדיקת סינון דוחות כספיים (Earnings Filter)
+                                earnings_cond = True
+                                if use_earnings_filter:
+                                    sym_edates = earnings_dates_map.get(sym, set())
+                                    signal_date_dt = pd.to_datetime(day).date()
+                                    window_end = signal_date_dt + timedelta(days=int(earnings_days_buffer))
+                                    # אם קיים תאריך דוח בטווח מיום האיתות ועד חלון הימים קדימה - מבוטל
+                                    if any(signal_date_dt <= ed <= window_end for ed in sym_edates):
+                                        earnings_cond = False
+
+                                if rsi_cond and green_cond and sma_cond and slope_cond and dist_cond and rvol_cond and earnings_cond:
                                     alloc = total_equity * position_pct
                                     if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
                                         pending_buys.append({
@@ -555,6 +593,7 @@ if run_button:
                     # מדדים ומסננים לבחירה וכוונונם
                     "סינון שוק SPY > SMA 200": "מופעל" if use_spy_filter else "כבוי",
                     "סינון SMA מניה": f"מופעל (אורך {sma_length})" if use_sma else "כבוי",
+                    "סינון ימי דוחות (Earnings)": f"מופעל (חלון {earnings_days_buffer} ימים)" if use_earnings_filter else "כבוי",
                     "מימוש 50% ביעד RSI": "מופעל" if use_scale_out else "כבוי",
                     "מרחק Trailing Stop (%)": trailing_pct if use_scale_out else "ללא",
                     "נעילת רצפת Breakeven": "מופעל" if (use_scale_out and lock_breakeven) else "כבוי",
