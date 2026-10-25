@@ -614,6 +614,17 @@ if run_button:
                 strat_ret = ((strat_final / initial_capital) - 1) * 100
                 bm_ret = ((bm_final / initial_capital) - 1) * 100
 
+                # חישוב תשואת מדד נטו ממס (25% במימוש מלא בסוף תקופה)
+                bm_profit = bm_final - initial_capital
+                if bm_profit > 0:
+                    bm_tax_amount = bm_profit * 0.25
+                    bm_net_final = bm_final - bm_tax_amount
+                    bm_net_ret = ((bm_net_final / initial_capital) - 1) * 100
+                else:
+                    bm_tax_amount = 0.0
+                    bm_net_final = bm_final
+                    bm_net_ret = bm_ret
+
                 df_equity["Daily_Return"] = df_equity["Equity"].pct_change().fillna(0)
                 df_equity["BM_Daily_Return"] = df_equity["Benchmark"].pct_change().fillna(0)
 
@@ -656,7 +667,9 @@ if run_button:
                 else:
                     win_rate, profit_factor, payoff_ratio, avg_win, avg_loss, avg_hold_days = 0, 0, 0, 0, 0, 0
 
-                alpha_val = strat_ret - bm_ret
+                effective_bm_ret = bm_net_ret if use_capital_gains_tax else bm_ret
+                alpha_val = strat_ret - effective_bm_ret
+
                 st.session_state["last_sim_data"] = {
                     "זמן הרצה": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "תאריך התחלה": str(start_date),
@@ -686,7 +699,8 @@ if run_button:
                     "סינון מחזור יחסי (RVOL)": f"מופעל (סף {min_rvol}, ממוצע {rvol_window} ימים)" if use_rvol else "כבוי",
                     "שווי תיק סופי ($)": round(strat_final, 2),
                     "תשואת אסטרטגיה (%)": round(strat_ret, 2),
-                    "תשואת S&P 500 (%)": round(bm_ret, 2),
+                    "תשואת S&P 500 ברוטו (%)": round(bm_ret, 2),
+                    "תשואת S&P 500 נטו ממס (%)": round(bm_net_ret, 2) if use_capital_gains_tax else "ללא",
                     "אלפא מול המדד (%)": round(alpha_val, 2),
                     "נסיגה מקסימלית MaxDD (%)": round(max_dd, 2),
                     "Win Rate (%)": round(win_rate, 2),
@@ -703,11 +717,30 @@ if run_button:
                 st.markdown("---")
                 col_m1, col_m2, col_m3, col_m4, col_m5, col_m6 = st.columns(6)
                 col_m1.metric("שווי תיק סופי", f"${strat_final:,.2f}", delta=f"{strat_ret:.2f}%")
-                col_m2.metric("תשואת מדד S&P 500", f"${bm_final:,.2f}", delta=f"{bm_ret:.2f}%")
-                col_m3.metric("Alpha (עודף על המדד)", f"{(strat_ret - bm_ret):+.2f}%")
+                
+                # תצוגת תשואת מדד: ברוטו + נטו אם קיזוז מס פעיל
+                if use_capital_gains_tax:
+                    col_m2.metric(
+                        "מדד S&P 500 (ברוטו)", 
+                        f"${bm_final:,.2f}", 
+                        delta=f"{bm_ret:.2f}%",
+                        help=f"תשואה במימוש מלא נטו ממס (25%): {bm_net_ret:.2f}% (${bm_net_final:,.2f})"
+                    )
+                else:
+                    col_m2.metric("תשואת מדד S&P 500", f"${bm_final:,.2f}", delta=f"{bm_ret:.2f}%")
+
+                alpha_label = "Alpha (מול נטו מדד)" if use_capital_gains_tax else "Alpha (עודף על המדד)"
+                col_m3.metric(alpha_label, f"{alpha_val:+.2f}%")
                 col_m4.metric("Max Drawdown (נסיגה)", f"{max_dd:.2f}%")
                 col_m5.metric("סה\"כ עמלות IBKR", f"${total_commissions_paid:,.2f}" if use_commissions else "כבוי")
                 col_m6.metric("סה\"כ מס ששולם", f"${total_tax_paid:,.2f}" if use_capital_gains_tax else "כבוי")
+
+                # תוספת נתון ויזואלי לתשואת מדד נטו מתחת ל-KPIs כאשר מס מופעל
+                if use_capital_gains_tax:
+                    st.caption(
+                        f"🏛️ **השוואת נטו ממס (S&P 500):** שווי המדד לאחר ניכוי 25% מס במקרה של מימוש מלא הוא **${bm_net_final:,.2f}** "
+                        f"(תשואת נטו של **{bm_net_ret:.2f}%**, סך מס רעיוני של **${bm_tax_amount:,.2f}**)."
+                    )
 
                 if use_capital_gains_tax and annual_tax_log:
                     with st.expander("🏛️ פירוט מס רווחי הון לפי שנים", expanded=False):
