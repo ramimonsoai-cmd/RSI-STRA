@@ -12,8 +12,8 @@ st.set_page_config(page_title="סימולטור מסחר כמותי מוסדי �
 if "saved_simulations" not in st.session_state:
     st.session_state.saved_simulations = []
 
-st.title("📈 סימולטור מסחר כמותי: ניתוח מוסדי + יומן סימולציות Excel")
-st.caption("ניתוח תיק מקיף, בדיקת אסטרטגיות, צבירת סימולציות והורדת יומן מחקר מלא לאקסל")
+st.title("📈 סימולטור מסחר כמותי: ניתוח מוסדי + עמלות ומס רווחי הון")
+st.caption("ניתוח תיק מקיף, בדיקת אסטרטגיות, עמלות IBKR Tiered, מס רווחי הון שנתי והורדת יומן מלא לאקסל")
 
 # מאגר מניות מגה-קאפ מורחב ומעודכן
 STOCK_MARKET_CAPS = {
@@ -88,8 +88,7 @@ use_earnings_filter = st.sidebar.checkbox(
 earnings_days_buffer = st.sidebar.number_input(
     "חלון ימים לבדיקת דוח מיום האיתות קדימה:",
     min_value=1, max_value=20, value=5, step=1,
-    disabled=not use_earnings_filter,
-    help="אם קיים יום דוחות בטווח שבין יום האיתות למספר ימים זה - לא תתבצע כניסה לעסקה."
+    disabled=not use_earnings_filter
 )
 
 # --- 2. מסנני מניעת סכינים נופלות ---
@@ -186,6 +185,22 @@ else:
     sl_usd_val = st.sidebar.number_input("הפסד דולרי מקסימלי לעסקה ($):", min_value=10.0, max_value=2000.0, value=100.0, step=10.0, disabled=not use_sl)
     sl_pct_val = None
 
+# --- 6. עמלות מסחר IBKR ומס רווחי הון ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("💰 6. חישובי עמלות ומס רווחי הון")
+
+use_commissions = st.sidebar.checkbox(
+    "📉 חשב עמלות מסחר (IBKR Tiered)",
+    value=False,
+    help="$0.0035 למניה, מינימום $0.35, מקסימום 1% משווי העסקה."
+)
+
+use_capital_gains_tax = st.sidebar.checkbox(
+    "🏛️ קזז מס רווחי הון בסוף שנה (25%)",
+    value=False,
+    help="בסוף כל שנת מס מקזז 25% מהרווחים הממומשים השנתיים נטו מיתרת המזומן. הפסדים מועברים קדימה."
+)
+
 st.sidebar.markdown("---")
 exec_timing = st.sidebar.radio(
     "תזמון ביצוע פקודות:",
@@ -207,6 +222,15 @@ def compute_rsi(series, period=14):
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     rs = gain / loss
     return 100 - (100 / (1 + rs))
+
+def calculate_ibkr_commission(shares, price):
+    """מחשב עמלת IBKR Tiered למניות ארה"ב"""
+    if not use_commissions or shares <= 0:
+        return 0.0
+    comm = shares * 0.0035
+    trade_value = shares * price
+    max_comm = trade_value * 0.01
+    return min(max(comm, 0.35), max_comm)
 
 active_tickers = [sym for sym, cap in STOCK_MARKET_CAPS.items() if cap >= min_cap]
 st.info(f"נמצאו **{len(active_tickers)}** חברות מעל סף שווי שוק של **${min_cap}B** (מתוך מאגר של {len(STOCK_MARKET_CAPS)} חברות)")
@@ -290,7 +314,14 @@ if run_button:
                 pending_buys = []
                 pending_sells = []
 
-                for day in trading_days:
+                # משתני מעקב עמלות ומס
+                total_commissions_paid = 0.0
+                total_tax_paid = 0.0
+                current_year_realized_pnl = 0.0
+                loss_carryforward = 0.0
+                annual_tax_log = []
+
+                for day_idx, day in enumerate(trading_days):
                     # 1. ביצוע פקודות שממתינות מהיום הקודם (Next Day Open)
                     if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
                         for sell in pending_sells:
@@ -302,9 +333,13 @@ if run_button:
                                 proceeds = shares_selling * exit_px
                                 cost_of_these_shares = shares_selling * pos["entry_price"]
                                 
-                                cash += proceeds
-                                pnl_dollar = proceeds - cost_of_these_shares
-                                pnl_pct = (exit_px / pos["entry_price"]) - 1.0
+                                sell_comm = calculate_ibkr_commission(shares_selling, exit_px)
+                                total_commissions_paid += sell_comm
+                                
+                                cash += (proceeds - sell_comm)
+                                pnl_dollar = proceeds - cost_of_these_shares - sell_comm
+                                pnl_pct = ((proceeds - sell_comm) / cost_of_these_shares) - 1.0
+                                current_year_realized_pnl += pnl_dollar
 
                                 closed_trades.append({
                                     "מניה": sym,
@@ -313,6 +348,7 @@ if run_button:
                                     "מחיר קנייה": round(pos["entry_price"], 2),
                                     "מחיר מכירה": round(exit_px, 2),
                                     "כמות שנמכרה": round(shares_selling, 2),
+                                    "עמלה ($)": round(sell_comm, 2) if use_commissions else 0.0,
                                     "רווח/הפסד ($)": round(pnl_dollar, 2),
                                     "תשואה (%)": round(pnl_pct * 100, 2),
                                     "ימי החזקה": pos["days_held"],
@@ -349,21 +385,25 @@ if run_button:
                                     alloc = buy["allocation"]
                                     if cash >= alloc and alloc > 0 and entry_px > 0:
                                         shares = alloc / entry_px
-                                        cash -= alloc
-                                        open_positions[sym] = {
-                                            "shares": shares,
-                                            "entry_price": entry_px,
-                                            "cost_basis": alloc,
-                                            "entry_date": day,
-                                            "days_held": 0,
-                                            "scaled_out": False,
-                                            "peak_after_scale": entry_px
-                                        }
-                                        executed_buys.append({
-                                            "date": day,
-                                            "ticker": sym,
-                                            "price": entry_px
-                                        })
+                                        buy_comm = calculate_ibkr_commission(shares, entry_px)
+                                        
+                                        if cash >= (alloc + buy_comm):
+                                            total_commissions_paid += buy_comm
+                                            cash -= (alloc + buy_comm)
+                                            open_positions[sym] = {
+                                                "shares": shares,
+                                                "entry_price": entry_px,
+                                                "cost_basis": alloc,
+                                                "entry_date": day,
+                                                "days_held": 0,
+                                                "scaled_out": False,
+                                                "peak_after_scale": entry_px
+                                            }
+                                            executed_buys.append({
+                                                "date": day,
+                                                "ticker": sym,
+                                                "price": entry_px
+                                            })
                         pending_buys = []
 
                     # 2. עדכון פוזיציות ושערוך שווי תיק
@@ -377,9 +417,6 @@ if run_button:
                                 pos["peak_after_scale"] = cur_px
                         else:
                             holdings_val += pos["shares"] * pos["entry_price"]
-
-                    total_equity = cash + holdings_val
-                    portfolio_history.append({"Date": day, "Equity": total_equity, "Cash": cash})
 
                     # 3. בדיקת תנאי יציאה בסגירת יום המסחר
                     sells_to_process = []
@@ -437,9 +474,14 @@ if run_button:
                             shares_selling = s["shares"]
                             proceeds = shares_selling * cur_px
                             cost_of_these = shares_selling * pos["entry_price"]
-                            cash += proceeds
-                            pnl_d = proceeds - cost_of_these
-                            pnl_p = (cur_px / pos["entry_price"]) - 1.0
+                            
+                            sell_comm = calculate_ibkr_commission(shares_selling, cur_px)
+                            total_commissions_paid += sell_comm
+                            
+                            cash += (proceeds - sell_comm)
+                            pnl_d = proceeds - cost_of_these - sell_comm
+                            pnl_p = ((proceeds - sell_comm) / cost_of_these) - 1.0
+                            current_year_realized_pnl += pnl_d
                             
                             closed_trades.append({
                                 "מניה": sym,
@@ -448,6 +490,7 @@ if run_button:
                                 "מחיר קנייה": round(pos["entry_price"], 2),
                                 "מחיר מכירה": round(cur_px, 2),
                                 "כמות שנמכרה": round(shares_selling, 2),
+                                "עמלה ($)": round(sell_comm, 2) if use_commissions else 0.0,
                                 "רווח/הפסד ($)": round(pnl_d, 2),
                                 "תשואה (%)": round(pnl_p * 100, 2),
                                 "ימי החזקה": pos["days_held"],
@@ -462,6 +505,8 @@ if run_button:
                     is_spy_bullish = True
                     if use_spy_filter:
                         is_spy_bullish = bool(spy_filter_series.loc[day]) if day in spy_filter_series.index else False
+
+                    current_total_eq = cash + holdings_val
 
                     if is_spy_bullish:
                         for sym in active_tickers:
@@ -490,18 +535,16 @@ if run_button:
                                     if row.get("RVOL", 1.0) < min_rvol:
                                         rvol_cond = False
 
-                                # בדיקת סינון דוחות כספיים (Earnings Filter)
                                 earnings_cond = True
                                 if use_earnings_filter:
                                     sym_edates = earnings_dates_map.get(sym, set())
                                     signal_date_dt = pd.to_datetime(day).date()
                                     window_end = signal_date_dt + timedelta(days=int(earnings_days_buffer))
-                                    # אם קיים תאריך דוח בטווח מיום האיתות ועד חלון הימים קדימה - מבוטל
                                     if any(signal_date_dt <= ed <= window_end for ed in sym_edates):
                                         earnings_cond = False
 
                                 if rsi_cond and green_cond and sma_cond and slope_cond and dist_cond and rvol_cond and earnings_cond:
-                                    alloc = total_equity * position_pct
+                                    alloc = current_total_eq * position_pct
                                     if exec_timing == "מחיר פתיחה ביום שלמחרת (Next Day Open)":
                                         pending_buys.append({
                                             "ticker": sym,
@@ -512,17 +555,54 @@ if run_button:
                                         if cash >= alloc and alloc > 0:
                                             px = row["Close"]
                                             shares = alloc / px
-                                            cash -= alloc
-                                            open_positions[sym] = {
-                                                "shares": shares,
-                                                "entry_price": px,
-                                                "cost_basis": alloc,
-                                                "entry_date": day,
-                                                "days_held": 0,
-                                                "scaled_out": False,
-                                                "peak_after_scale": px
-                                            }
-                                            executed_buys.append({"date": day, "ticker": sym, "price": px})
+                                            buy_comm = calculate_ibkr_commission(shares, px)
+                                            if cash >= (alloc + buy_comm):
+                                                total_commissions_paid += buy_comm
+                                                cash -= (alloc + buy_comm)
+                                                open_positions[sym] = {
+                                                    "shares": shares,
+                                                    "entry_price": px,
+                                                    "cost_basis": alloc,
+                                                    "entry_date": day,
+                                                    "days_held": 0,
+                                                    "scaled_out": False,
+                                                    "peak_after_scale": px
+                                                }
+                                                executed_buys.append({"date": day, "ticker": sym, "price": px})
+
+                    # 5. קיזוז מס רווחי הון שנתי (25%) ביום המסחר האחרון של השנה
+                    if use_capital_gains_tax:
+                        is_last_day_of_year = False
+                        if day_idx == len(trading_days) - 1:
+                            is_last_day_of_year = True
+                        else:
+                            next_day = trading_days[day_idx + 1]
+                            if day.year != next_day.year:
+                                is_last_day_of_year = True
+
+                        if is_last_day_of_year:
+                            taxable_amount = current_year_realized_pnl - loss_carryforward
+                            if taxable_amount > 0:
+                                year_tax = taxable_amount * 0.25
+                                cash -= year_tax
+                                total_tax_paid += year_tax
+                                loss_carryforward = 0.0
+                                annual_tax_log.append({
+                                    "שנה": day.year,
+                                    "רווח שנתי חייב במס ($)": round(taxable_amount, 2),
+                                    "מס ששולם ($)": round(year_tax, 2)
+                                })
+                            else:
+                                loss_carryforward = abs(taxable_amount)
+                                annual_tax_log.append({
+                                    "שנה": day.year,
+                                    "הפסד שנתי שהועבר קדימה ($)": round(loss_carryforward, 2),
+                                    "מס ששולם ($)": 0.0
+                                })
+                            current_year_realized_pnl = 0.0
+
+                    total_equity = cash + holdings_val
+                    portfolio_history.append({"Date": day, "Equity": total_equity, "Cash": cash})
 
                 # --- חישוב מדדי ביצוע מוסדיים (Institutional Quant Analytics) ---
                 df_equity = pd.DataFrame(portfolio_history).set_index("Date")
@@ -576,11 +656,9 @@ if run_button:
                 else:
                     win_rate, profit_factor, payoff_ratio, avg_win, avg_loss, avg_hold_days = 0, 0, 0, 0, 0, 0
 
-                # שמירת תוצאות הסימולציה האחרונה ב-session_state עבור לחצן השמירה
                 alpha_val = strat_ret - bm_ret
                 st.session_state["last_sim_data"] = {
                     "זמן הרצה": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    # פרמטרי קלט בסיסיים
                     "תאריך התחלה": str(start_date),
                     "תאריך סיום": str(end_date),
                     "שווי שוק מינימלי ($B)": min_cap,
@@ -590,7 +668,8 @@ if run_button:
                     "RSI יעד יציאה": rsi_exit,
                     "תקופת RSI (ימים)": rsi_period,
                     "תזמון ביצוע": exec_timing,
-                    # מדדים ומסננים לבחירה וכוונונם
+                    "עמלות מסחר (IBKR Tiered)": f"${total_commissions_paid:.2f}" if use_commissions else "כבוי",
+                    "מס רווחי הון (25%)": f"${total_tax_paid:.2f}" if use_capital_gains_tax else "כבוי",
                     "סינון שוק SPY > SMA 200": "מופעל" if use_spy_filter else "כבוי",
                     "סינון SMA מניה": f"מופעל (אורך {sma_length})" if use_sma else "כבוי",
                     "סינון ימי דוחות (Earnings)": f"מופעל (חלון {earnings_days_buffer} ימים)" if use_earnings_filter else "כבוי",
@@ -605,13 +684,11 @@ if run_button:
                     "שיפוע SMA חיובי": f"מופעל (מול {sma_slope_lookback} ימים)" if (use_sma and use_sma_slope) else "כבוי",
                     "הגבלת מרחק מעל SMA": f"מופעל (עד {max_dist_pct}%)" if (use_sma and use_max_dist_sma) else "כבוי",
                     "סינון מחזור יחסי (RVOL)": f"מופעל (סף {min_rvol}, ממוצע {rvol_window} ימים)" if use_rvol else "כבוי",
-                    # תוצאות ואחוזי תשואה
                     "שווי תיק סופי ($)": round(strat_final, 2),
                     "תשואת אסטרטגיה (%)": round(strat_ret, 2),
                     "תשואת S&P 500 (%)": round(bm_ret, 2),
                     "אלפא מול המדד (%)": round(alpha_val, 2),
                     "נסיגה מקסימלית MaxDD (%)": round(max_dd, 2),
-                    # מדדי איכות מספריים
                     "Win Rate (%)": round(win_rate, 2),
                     "Profit Factor (PF)": round(profit_factor, 2),
                     "Sharpe Ratio": round(sharpe_ratio, 2),
@@ -624,53 +701,41 @@ if run_button:
 
                 # --- 1. הצגת KPIs מרכזיים עליונים ---
                 st.markdown("---")
-                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                col_m1, col_m2, col_m3, col_m4, col_m5, col_m6 = st.columns(6)
                 col_m1.metric("שווי תיק סופי", f"${strat_final:,.2f}", delta=f"{strat_ret:.2f}%")
                 col_m2.metric("תשואת מדד S&P 500", f"${bm_final:,.2f}", delta=f"{bm_ret:.2f}%")
                 col_m3.metric("Alpha (עודף על המדד)", f"{(strat_ret - bm_ret):+.2f}%")
-                col_m4.metric("Max Drawdown (נסיגה משיא)", f"{max_dd:.2f}%")
+                col_m4.metric("Max Drawdown (נסיגה)", f"{max_dd:.2f}%")
+                col_m5.metric("סה\"כ עמלות IBKR", f"${total_commissions_paid:,.2f}" if use_commissions else "כבוי")
+                col_m6.metric("סה\"כ מס ששולם", f"${total_tax_paid:,.2f}" if use_capital_gains_tax else "כבוי")
 
-                # --- 2. אזור ייעודי: מדדי איכות ניהול תיק וסיכון (Institutional Metrics) ---
+                if use_capital_gains_tax and annual_tax_log:
+                    with st.expander("🏛️ פירוט מס רווחי הון לפי שנים", expanded=False):
+                        st.table(pd.DataFrame(annual_tax_log))
+
+                # --- 2. אזור ייעודי: מדדי איכות ניהול תיק וסיכון ---
                 st.markdown("### 📊 מדדי איכות ניהול תיק וסיכון (Institutional Metrics)")
-                
                 q1, q2, q3, q4, q5, q6 = st.columns(6)
-                q1.metric("שיעור הצלחה (Win Rate)", f"{win_rate:.1f}%", help="אחוז פעולות המכירה שהסתיימו ברווח")
-                q2.metric("Profit Factor (PF)", f"{profit_factor:.2f}", help="יחס סך הרווחים בדולרים חלקי סך ההפסדים. מעל 1.5 נחשב טוב מאוד, מעל 2.0 מעולה.")
-                q3.metric("מדד שארפ (Sharpe)", f"{sharpe_ratio:.2f}", help="תשואה עודפת ליחידת סיכון/תנודתיות שנתית (Rf=4%). מעל 1.0 טוב, מעל 1.5 מצוין.")
-                q4.metric("מדד סורטינו (Sortino)", f"{sortino_ratio:.2f}", help="תשואה מול תנודתיות שלילית בלבד. מדד מדויק יותר לאסטרטגיות מומנטום.")
-                q5.metric("מדד קלמר (Calmar)", f"{calmar_ratio:.2f}", help="תשואה שנתית מורכבת (CAGR) חלקי הנסיגה המקסימלית (MaxDD).")
-                q6.metric("Payoff Ratio (יחס רווח/הפסד)", f"{payoff_ratio:.2f}", help="ממוצע דולרי בעסקה מנצחת חלקי ממוצע בעסקה מפסידה.")
+                q1.metric("שיעור הצלחה (Win Rate)", f"{win_rate:.1f}%")
+                q2.metric("Profit Factor (PF)", f"{profit_factor:.2f}")
+                q3.metric("מדד שארפ (Sharpe)", f"{sharpe_ratio:.2f}")
+                q4.metric("מדד סורטינו (Sortino)", f"{sortino_ratio:.2f}")
+                q5.metric("מדד קלמר (Calmar)", f"{calmar_ratio:.2f}")
+                q6.metric("Payoff Ratio (יחס רווח/הפסד)", f"{payoff_ratio:.2f}")
 
                 perf_summary = pd.DataFrame({
                     "מדד": [
-                        "Win Rate (שיעור הצלחה)",
-                        "Profit Factor (PF)",
-                        "Sharpe Ratio (מדד שארפ)",
-                        "Sortino Ratio (מדד סורטינו)",
-                        "Calmar Ratio (מדד קלמר)",
-                        "Payoff Ratio (יחס רווח/הפסד)",
-                        "Max Drawdown (נסיגה מקסימלית)",
-                        "זמן החזקה ממוצע"
+                        "Win Rate (שיעור הצלחה)", "Profit Factor (PF)", "Sharpe Ratio (מדד שארפ)",
+                        "Sortino Ratio (מדד סורטינו)", "Calmar Ratio (מדד קלמר)", "Payoff Ratio (יחס רווח/הפסד)",
+                        "Max Drawdown (נסיגה מקסימלית)", "זמן החזקה ממוצע"
                     ],
                     "ערך בתיק שלך": [
-                        f"{win_rate:.1f}%",
-                        f"{profit_factor:.2f}",
-                        f"{sharpe_ratio:.2f}",
-                        f"{sortino_ratio:.2f}",
-                        f"{calmar_ratio:.2f}",
-                        f"{payoff_ratio:.2f}",
-                        f"{max_dd:.2f}%",
-                        f"{avg_hold_days:.1f} ימים"
+                        f"{win_rate:.1f}%", f"{profit_factor:.2f}", f"{sharpe_ratio:.2f}",
+                        f"{sortino_ratio:.2f}", f"{calmar_ratio:.2f}", f"{payoff_ratio:.2f}",
+                        f"{max_dd:.2f}%", f"{avg_hold_days:.1f} ימים"
                     ],
                     "סף ייחוס מקצועי": [
-                        "> 60% (לאסטרטגיות RSI)",
-                        "> 1.60",
-                        "> 1.20",
-                        "> 1.80",
-                        "> 1.20",
-                        "> 1.30",
-                        "< 10.0%",
-                        "3 – 15 ימי מסחר"
+                        "> 60% (לאסטרטגיות RSI)", "> 1.60", "> 1.20", "> 1.80", "> 1.20", "> 1.30", "< 10.0%", "3 – 15 ימי מסחר"
                     ],
                     "אינדיקציה": [
                         "מעולה 🚀" if win_rate >= 70 else ("טוב מאוד ✅" if win_rate >= 60 else "גבולי ⚠️"),
@@ -681,16 +746,6 @@ if run_button:
                         "רווחים גדולים מהפסדים 🚀" if payoff_ratio >= 1.5 else ("רווח ממוצע שווה להפסד ✅" if payoff_ratio >= 1.0 else "הפסדים ממוצעים גדולים מהרווח ⚠️"),
                         "רמת סיכון נמוכה ומבוקרת 🚀" if abs(max_dd) <= 7.0 else ("נסיגה סבירה לשוק מניות ✅" if abs(max_dd) <= 12.0 else "נסיגה עמוקה ⚠️"),
                         "שחרור מהיר של מזומן 🚀" if avg_hold_days <= 10 else ("מחזור הון תקין ✅" if avg_hold_days <= 20 else "כסף תקוע לזמן רב ⚠️")
-                    ],
-                    "מה המשמעות של המדד?": [
-                        "אחוז העסקאות שהניבו רווח מתוך סך הפעולות שבוצעו.",
-                        "כמה דולרים הרווחת על כל דולר שהפסדת במצטבר (סך רווח / סך הפסד).",
-                        "מודד האם התשואה נובעת מאיכות המסחר או מרכבת הרים מסוכנת (מול ריבית חסרת סיכון).",
-                        "בדומה לשארפ, אך מעניש רק על ירידות והפסדים (ולא על זינוקים למעלה).",
-                        "היחס בין קצב התשואה השנתי (CAGR) לעומק הנפילה המקסימלית שחווית.",
-                        "הרווח הממוצע בטרייד מנצח חלקי ההפסד הממוצע בטרייד מפסיד.",
-                        "הירידה החדה ביותר בתיק משיא כל הזמנים שלו עד לנקודת השפל.",
-                        "משך הזמן הממוצע שבו הון התיק היה מושקע בפוזיציה עד למימוש."
                     ]
                 })
                 st.table(perf_summary)
@@ -709,7 +764,7 @@ if run_button:
                 st.plotly_chart(fig, use_container_width=True)
 
                 # --- 4. יומן עסקאות מפורט ---
-                with st.expander("📋 יומן עסקאות מפורט (כולל פירוט מימושים וימי החזקה)", expanded=False):
+                with st.expander("📋 יומן עסקאות מפורט (כולל עמלות נטו ומימושים)", expanded=False):
                     if not df_trades.empty:
                         clean_trades = [{k: v for k, v in t.items() if k != "exit_date_raw"} for t in closed_trades]
                         df_tr = pd.DataFrame(clean_trades)
@@ -718,7 +773,7 @@ if run_button:
                     else:
                         st.info("לא נסגרו עסקאות בתקופה זו.")
 
-# --- 5. אזור ייעודי: צבירה, ניהול והורדת יומן סימולציות Excel ---
+# --- 5. אזור שמירה והורדת יומן סימולציות Excel ---
 st.markdown("---")
 st.subheader("📁 יומן שמירת סימולציות והורדה לאקסל (Excel)")
 
@@ -740,11 +795,9 @@ with col_clear:
 
 if st.session_state.saved_simulations:
     df_saved = pd.DataFrame(st.session_state.saved_simulations)
-    
     st.write(f"**סה\"כ סימולציות שנצברו ביומן:** {len(df_saved)}")
     st.dataframe(df_saved, use_container_width=True)
 
-    # יצירת קובץ Excel בינארי להורדה בזיכרון (מתאים גם למובייל)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_saved.to_excel(writer, index=False, sheet_name="Simulations_Log")
