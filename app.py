@@ -198,7 +198,7 @@ use_commissions = st.sidebar.checkbox(
 use_capital_gains_tax = st.sidebar.checkbox(
     "🏛️ קזז מס רווחי הון בסוף שנה (25%)",
     value=False,
-    help="בסוף כל שנת מס מקזז 25% מהרווחים הממומשים השנתיים נטו מיתרת המזומן. הפסדים מועברים קדימה."
+    help="מחשב 25% מס שנתי על רווחים ממומשים נטו עם מגן מס להפסדים, ומשקלל את שווי התיק נטו בכיס."
 )
 
 st.sidebar.markdown("---")
@@ -570,7 +570,8 @@ if run_button:
                                                 }
                                                 executed_buys.append({"date": day, "ticker": sym, "price": px})
 
-                    # 5. קיזוז מס רווחי הון שנתי (25%) ביום המסחר האחרון של השנה
+                    # 5. חישוב מס רווחי הון שנתי (25%) ביום המסחר האחרון של השנה
+                    # בסטנדרט מוסדי: המס מחושב ונצבר בשכבת הדיווח, מבלי לבצע משיכת מזומן שיוצרת "קריסה מלאכותית" בגרף
                     if use_capital_gains_tax:
                         is_last_day_of_year = False
                         if day_idx == len(trading_days) - 1:
@@ -584,7 +585,6 @@ if run_button:
                             taxable_amount = current_year_realized_pnl - loss_carryforward
                             if taxable_amount > 0:
                                 year_tax = taxable_amount * 0.25
-                                cash -= year_tax
                                 total_tax_paid += year_tax
                                 loss_carryforward = 0.0
                                 annual_tax_log.append({
@@ -609,9 +609,13 @@ if run_button:
                 bm_start = benchmark_close.iloc[0]
                 df_equity["Benchmark"] = (benchmark_close / bm_start) * initial_capital
 
+                # שווי תיק ברוטו (איכות מסחר טהורה) ושווי תיק נטו (לאחר ניכוי המס המצטבר בכיס)
                 strat_final = df_equity["Equity"].iloc[-1]
-                bm_final = df_equity["Benchmark"].iloc[-1]
+                strat_net_final = strat_final - total_tax_paid
                 strat_ret = ((strat_final / initial_capital) - 1) * 100
+                strat_net_ret = ((strat_net_final / initial_capital) - 1) * 100
+
+                bm_final = df_equity["Benchmark"].iloc[-1]
                 bm_ret = ((bm_final / initial_capital) - 1) * 100
 
                 # חישוב תשואת מדד נטו ממס (25% במימוש מלא בסוף תקופה)
@@ -625,6 +629,7 @@ if run_button:
                     bm_net_final = bm_final
                     bm_net_ret = bm_ret
 
+                # מדדי שארפ וסיכון מחושבים מעקומת המסחר האמיתית והרציפה
                 df_equity["Daily_Return"] = df_equity["Equity"].pct_change().fillna(0)
                 df_equity["BM_Daily_Return"] = df_equity["Benchmark"].pct_change().fillna(0)
 
@@ -667,8 +672,9 @@ if run_button:
                 else:
                     win_rate, profit_factor, payoff_ratio, avg_win, avg_loss, avg_hold_days = 0, 0, 0, 0, 0, 0
 
+                effective_strat_ret = strat_net_ret if use_capital_gains_tax else strat_ret
                 effective_bm_ret = bm_net_ret if use_capital_gains_tax else bm_ret
-                alpha_val = strat_ret - effective_bm_ret
+                alpha_val = effective_strat_ret - effective_bm_ret
 
                 st.session_state["last_sim_data"] = {
                     "זמן הרצה": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -697,10 +703,10 @@ if run_button:
                     "שיפוע SMA חיובי": f"מופעל (מול {sma_slope_lookback} ימים)" if (use_sma and use_sma_slope) else "כבוי",
                     "הגבלת מרחק מעל SMA": f"מופעל (עד {max_dist_pct}%)" if (use_sma and use_max_dist_sma) else "כבוי",
                     "סינון מחזור יחסי (RVOL)": f"מופעל (סף {min_rvol}, ממוצע {rvol_window} ימים)" if use_rvol else "כבוי",
-                    "שווי תיק סופי ($)": round(strat_final, 2),
-                    "תשואת אסטרטגיה (%)": round(strat_ret, 2),
-                    "תשואת S&P 500 ברוטו (%)": round(bm_ret, 2),
-                    "תשואת S&P 500 נטו ממס (%)": round(bm_net_ret, 2) if use_capital_gains_tax else "ללא",
+                    "שווי תיק סופי ברוטו ($)": round(strat_final, 2),
+                    "שווי תיק סופי נטו בכיס ($)": round(strat_net_final, 2) if use_capital_gains_tax else round(strat_final, 2),
+                    "תשואת אסטרטגיה (%)": round(effective_strat_ret, 2),
+                    "תשואת S&P 500 (%)": round(effective_bm_ret, 2),
                     "אלפא מול המדד (%)": round(alpha_val, 2),
                     "נסיגה מקסימלית MaxDD (%)": round(max_dd, 2),
                     "Win Rate (%)": round(win_rate, 2),
@@ -716,28 +722,23 @@ if run_button:
                 # --- 1. הצגת KPIs מרכזיים עליונים ---
                 st.markdown("---")
                 
-                # שורה ראשונה: ביצועי התיק מול המדד והאלפא
+                # שורה ראשונה: תוצאות התיק והשוואה הוגנת מול המדד
                 col_m1, col_m2, col_m3 = st.columns(3)
-                col_m1.metric("שווי תיק סופי", f"${strat_final:,.2f}", delta=f"{strat_ret:.2f}%")
-                
                 if use_capital_gains_tax:
-                    col_m2.metric(
-                        "מדד S&P 500 (ברוטו)", 
-                        f"${bm_final:,.2f}", 
-                        delta=f"{bm_ret:.2f}%"
-                    )
+                    col_m1.metric("שווי תיק סופי נטו (בכיס)", f"${strat_net_final:,.2f}", delta=f"{strat_net_ret:.2f}% (נטו)")
+                    col_m2.metric("מדד S&P 500 נטו ממס", f"${bm_net_final:,.2f}", delta=f"{bm_net_ret:.2f}% (נטו)")
+                    col_m3.metric("Alpha (נטו מול נטו)", f"{alpha_val:+.2f}%")
                 else:
+                    col_m1.metric("שווי תיק סופי", f"${strat_final:,.2f}", delta=f"{strat_ret:.2f}%")
                     col_m2.metric("תשואת מדד S&P 500", f"${bm_final:,.2f}", delta=f"{bm_ret:.2f}%")
+                    col_m3.metric("Alpha (עודף על המדד)", f"{alpha_val:+.2f}%")
 
-                alpha_label = "Alpha (מול נטו מדד)" if use_capital_gains_tax else "Alpha (עודף על המדד)"
-                col_m3.metric(alpha_label, f"{alpha_val:+.2f}%")
-
-                # שורה שנייה ייעודית למדד נטו (מופיעה רק אם קיזוז מס פעיל - מסודרת בעמודות נפרדות ללא שיבושי עברית)
+                # שורה שנייה: מדדי פירוט מס (מופיעה רק אם קיזוז מס מופעל)
                 if use_capital_gains_tax:
                     col_net1, col_net2, col_net3 = st.columns(3)
-                    col_net1.metric("מדד S&P 500 (נטו ממימוש)", f"${bm_net_final:,.2f}", delta=f"{bm_net_ret:.2f}%")
-                    col_net2.metric("מס רעיוני שנוכה מהמדד (25%)", f"${bm_tax_amount:,.2f}")
-                    col_net3.metric("סה\"כ מס ששולם בפועל בתיק", f"${total_tax_paid:,.2f}")
+                    col_net1.metric("שווי תיק ברוטו (לפני מס)", f"${strat_final:,.2f}", delta=f"{strat_ret:.2f}% (ברוטו)")
+                    col_net2.metric("סה\"כ מס ששולם בפועל בתיק", f"${total_tax_paid:,.2f}")
+                    col_net3.metric("מס רעיוני שנוכה מהמדד (25%)", f"${bm_tax_amount:,.2f}")
 
                 # שורה שלישית: מדדי סיכון ועלויות מסחר
                 col_s1, col_s2, col_s3 = st.columns(3)
