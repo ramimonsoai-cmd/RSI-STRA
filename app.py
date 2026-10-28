@@ -201,6 +201,13 @@ use_capital_gains_tax = st.sidebar.checkbox(
     help="מחשב 25% מס שנתי על רווחים ממומשים נטו עם מגן מס להפסדים, ומשקלל את שווי התיק נטו בכיס."
 )
 
+show_net_curve = st.sidebar.checkbox(
+    "📉 הצג בגרף קו שווי תיק נטו ממס",
+    value=False,
+    disabled=not use_capital_gains_tax,
+    help="מוסיף לגרף עקומה של שווי התיק בפועל לאחר ניכוי המיסים השנתיים, מבלי לפגוע במדדי הביצוע של האסטרטגיה."
+)
+
 st.sidebar.markdown("---")
 exec_timing = st.sidebar.radio(
     "תזמון ביצוע פקודות:",
@@ -601,7 +608,14 @@ if run_button:
                             current_year_realized_pnl = 0.0
 
                     total_equity = cash + holdings_val
-                    portfolio_history.append({"Date": day, "Equity": total_equity, "Cash": cash})
+                    # שומרים גם שווי תיק ברוטו (ללא עיוותי מס למדדים) וגם שווי תיק נטו (לאחר ניכוי מס מצטבר)
+                    net_equity_value = total_equity - total_tax_paid
+                    portfolio_history.append({
+                        "Date": day, 
+                        "Equity": total_equity, 
+                        "Net_Equity": net_equity_value,
+                        "Cash": cash
+                    })
 
                 # --- חישוב מדדי ביצוע מוסדיים (Institutional Quant Analytics) ---
                 df_equity = pd.DataFrame(portfolio_history).set_index("Date")
@@ -628,7 +642,7 @@ if run_button:
                     bm_net_final = bm_final
                     bm_net_ret = bm_ret
 
-                # מדדי שארפ וסיכון מחושבים מעקומת המסחר האמיתית והרציפה
+                # מדדי שארפ וסיכון מחושבים אך ורק מעקומת המסחר האמיתית והרציפה (ללא עיוותי משיכות מס)
                 df_equity["Daily_Return"] = df_equity["Equity"].pct_change().fillna(0)
                 df_equity["BM_Daily_Return"] = df_equity["Benchmark"].pct_change().fillna(0)
 
@@ -802,8 +816,31 @@ if run_button:
                 # --- 3. עקומת התיק ---
                 st.markdown("### 📈 עקומת שווי התיק (Equity Curve)")
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Equity"], mode="lines", name="תיק האסטרטגיה", line=dict(color="#00BA38", width=2.5)))
-                fig.add_trace(go.Scatter(x=df_equity.index, y=df_equity["Benchmark"], mode="lines", name="S&P 500", line=dict(color="#619CFF", dash="dot")))
+                fig.add_trace(go.Scatter(
+                    x=df_equity.index, 
+                    y=df_equity["Equity"], 
+                    mode="lines", 
+                    name="תיק האסטרטגיה (ברוטו / מסחר)", 
+                    line=dict(color="#00BA38", width=2.5)
+                ))
+                
+                # הוספת קו שווי תיק נטו ממס אם סומן
+                if use_capital_gains_tax and show_net_curve:
+                    fig.add_trace(go.Scatter(
+                        x=df_equity.index, 
+                        y=df_equity["Net_Equity"], 
+                        mode="lines", 
+                        name="שווי תיק נטו (בפועל לאחר ניכוי מס)", 
+                        line=dict(color="#FFA500", width=2.2, dash="dash")
+                    ))
+
+                fig.add_trace(go.Scatter(
+                    x=df_equity.index, 
+                    y=df_equity["Benchmark"], 
+                    mode="lines", 
+                    name="S&P 500", 
+                    line=dict(color="#619CFF", dash="dot")
+                ))
 
                 fig.update_layout(
                     title="שווי תיק מול S&P 500 (כולל סינון שוק SPY מעל SMA 200)",
